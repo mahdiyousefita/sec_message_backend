@@ -1,0 +1,84 @@
+import uuid
+from flask import current_app
+from app.extensions.minio_client import get_minio_client
+from app.models.post_model import Post
+from app.repositories.post_repository import create_post_by_username
+from app.repositories.media_repository import add_media
+
+
+ALLOWED_MIME_TYPES = {
+    "image/jpeg",
+    "image/png",
+    "image/webp"
+}
+
+def create_post_with_media(username, text, files):
+    if not text or not text.strip():
+        raise ValueError("Text is required")
+
+    if len(files) > 8:
+        raise ValueError("Maximum 8 media files allowed")
+
+    post = create_post_by_username(username, text.strip())
+
+    if not files:
+        return {"post_id": post.id}
+
+    minio = get_minio_client()
+    bucket = current_app.config["MINIO_BUCKET"]
+
+    for file in files:
+        if file.mimetype not in ALLOWED_MIME_TYPES:
+            raise ValueError(f"Unsupported media type: {file.mimetype}")
+
+        object_name = f"posts/{post.id}/{uuid.uuid4()}"
+        minio.put_object(
+            bucket_name=bucket,
+            object_name=object_name,
+            data=file,
+            length=-1,
+            part_size=10 * 1024 * 1024,
+            content_type=file.mimetype
+        )
+
+        add_media(
+            post_id=post.id,
+            object_name=object_name,
+            mime_type=file.mimetype
+        )
+
+    return {"post_id": post.id}
+
+
+def get_posts(page: int, limit: int):
+    if limit > 50:
+        limit = 50
+
+    query = Post.query.order_by(Post.created_at.desc())
+
+    total = query.count()
+    posts = query.offset((page - 1) * limit).limit(limit).all()
+
+    result = []
+    for post in posts:
+        result.append({
+            "id": post.id,
+            "text": post.text,
+            "author": post.author_id,
+            "created_at": post.created_at.isoformat(),
+            "media": [
+                {
+                    "id": media.id,
+                    "url": media.file_path,
+                    "type": media.media_type
+                }
+                for media in post.media
+            ]
+        })
+
+    return {
+        "page": page,
+        "limit": limit,
+        "total": total,
+        "posts": result
+    }
