@@ -13,7 +13,8 @@ def create_post_by_username(username, text):
         text=text
     )
     db.session.add(post)
-    db.session.commit()
+    db.session.flush()
+
     return post
 
 def get_posts(page, size, sort):

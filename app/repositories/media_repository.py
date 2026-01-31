@@ -8,5 +8,5 @@ def add_media(post_id, object_name, mime_type):
         mime_type=mime_type
     )
     db.session.add(media)
-    db.session.commit()
+    # db.session.commit()
     return media

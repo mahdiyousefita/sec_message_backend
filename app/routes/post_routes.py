@@ -8,21 +8,23 @@ post_bp = Blueprint("posts", __name__)
 @jwt_required()
 def create_post():
     username = get_jwt_identity()
-    text = request.form.get("text")
-    files = request.files.getlist("media")
+
+    data = request.get_json()
+    if not data:
+        return {"error": "Invalid JSON body"}, 400
+
+    text = data.get("text")
+    files = []  # فعلاً JSON-only یعنی بدون مدیا
 
     try:
         result = create_post_with_media(username, text, files)
-        return jsonify({
+        return {
             "message": "Post created successfully",
             "post_id": result["post_id"]
-        }), 201
-
+        }, 201
     except ValueError as e:
-        return jsonify({"error": str(e)}), 400
+        return {"error": str(e)}, 400
 
-    except Exception:
-        return jsonify({"error": "Internal server error"}), 500
 
 
 @post_bp.route("/posts", methods=["GET"])

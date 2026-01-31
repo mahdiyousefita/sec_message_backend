@@ -1,5 +1,7 @@
 from flask import Flask, jsonify
 from flask_jwt_extended import JWTManager
+
+from app.config import Config
 from app.db import db
 from werkzeug.exceptions import HTTPException
 from app.routes.post_routes import post_bp
@@ -13,10 +15,12 @@ from app.routes.message_routes import message_bp
 def create_app():
     app = Flask(__name__)
 
-    app.config["JWT_SECRET_KEY"] = "change-this-secret"
-    app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///messenger.db"
-    app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+    # app.config["JWT_SECRET_KEY"] = "change-this-secret"
+    # app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///messenger.db"
+    # app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
+
+    app.config.from_object(Config)
 
     db.init_app(app)
     jwt = JWTManager(app)
