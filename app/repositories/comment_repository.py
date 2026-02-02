@@ -44,3 +44,33 @@ def get_comments_by_post(post_id):
         )
         .all()
     )
+def get_all_comments_by_post_id(post_id: int):
+    return (
+        db.session.query(Comment)
+        .filter(Comment.post_id == post_id)
+        .all()
+    )
+
+def get_root_comments_by_post_id(
+    post_id: int,
+    page: int,
+    page_size: int
+):
+    offset = (page - 1) * page_size
+
+    return (
+        db.session.query(Comment)
+        .filter(
+            Comment.post_id == post_id,
+            Comment.parent_id.is_(None)
+        )
+        .order_by(
+            Comment.score.desc(),
+            Comment.created_at.desc()
+        )
+        .limit(page_size)
+        .offset(offset)
+        .all()
+    )
+
+

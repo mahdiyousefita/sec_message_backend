@@ -1,3 +1,4 @@
+flask-marshmallow
 redis==5.0.4
 flask-limiter
 async-timeout==5.0.1

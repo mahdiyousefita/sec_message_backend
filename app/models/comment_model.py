@@ -37,5 +37,7 @@ class Comment(db.Model):
         cascade="all, delete-orphan"
     )
 
+    score = db.Column(db.Integer, default=0, nullable=False)
+
 
 

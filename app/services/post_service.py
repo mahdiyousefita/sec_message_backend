@@ -8,7 +8,6 @@ from app.repositories.post_repository import create_post_by_username
 from app.repositories.media_repository import add_media
 from app.db import db
 
-from app.repositories.vote_repository import get_score
 
 
 
@@ -76,7 +75,7 @@ def get_posts(page: int, limit: int):
             "text": post.text,
             "author": post.author_id,
             "created_at": post.created_at.isoformat(),
-            "score": get_score("post", post.id),
+            # "score": post.score,
             "media": [
                 {
                     "id": media.id,

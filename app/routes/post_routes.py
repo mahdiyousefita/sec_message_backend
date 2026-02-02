@@ -28,7 +28,7 @@ def create_post():
 
 
 @post_bp.route("/posts", methods=["GET"])
-@jwt_required()
+# @jwt_required()
 def list_posts():
     page = request.args.get("page", default=1, type=int)
     limit = request.args.get("limit", default=10, type=int)

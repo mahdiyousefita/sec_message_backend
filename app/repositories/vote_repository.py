@@ -9,9 +9,12 @@ def upsert_vote(user_id, target_type, target_id, value):
         target_id=target_id
     ).first()
 
+    old_value = 0
+
     if vote:
         if vote.value == value:
-            return
+            return 0  # هیچ تغییری
+        old_value = vote.value
         vote.value = value
     else:
         vote = Vote(
@@ -23,14 +26,4 @@ def upsert_vote(user_id, target_type, target_id, value):
         db.session.add(vote)
 
     db.session.commit()
-
-
-def get_score(target_type: str, target_id: int) -> int:
-    return (
-        db.session.query(func.coalesce(func.sum(Vote.value), 0))
-        .filter(
-            Vote.target_type == target_type,
-            Vote.target_id == target_id
-        )
-        .scalar()
-    )
+    return value - old_value
