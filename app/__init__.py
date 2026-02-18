@@ -1,11 +1,13 @@
 from flask import Flask, jsonify
+from flask_cors import CORS
 from flask_jwt_extended import JWTManager
 
-from app.extensions.extensions import ma
+from app.extensions.extensions import ma, socketio
 
 from app.config import Config
 from app.db import db
 from werkzeug.exceptions import HTTPException
+from app.socket_events import register_socket_events
 
 from app.routes.main_routes import main_bp
 from app.routes.post_routes import post_bp
@@ -21,15 +23,21 @@ def create_app():
                 template_folder='templates',
                 static_folder='static')
 
-    # app.config["JWT_SECRET_KEY"] = "change-this-secret"
-    # app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///messenger.db"
-    # app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
-
     app.config.from_object(Config)
+
+    app.config["SESSION_COOKIE_SAMESITE"] = "None"
+    app.config["SESSION_COOKIE_SECURE"] = True
+    app.config["JWT_COOKIE_SAMESITE"] = "None"
+    app.config["JWT_COOKIE_SECURE"] = True
+
+    # Temporary broad CORS for cross-origin debugging in production.
+    CORS(app, supports_credentials=True)
 
     db.init_app(app)
     ma.init_app(app)
+    socketio.init_app(app)
     jwt = JWTManager(app)
+    register_socket_events()
 
     app.register_blueprint(main_bp, url_prefix="/")
     app.register_blueprint(auth_bp, url_prefix="/api/auth")

@@ -1,7 +1,4 @@
 import os
-# from dotenv import load_dotenv
-#
-# load_dotenv()
 
 
 class Config:
@@ -20,3 +17,30 @@ class Config:
         "http://127.0.0.1:9000"
     )
 
+    # Credentialed CORS cannot use a wildcard origin.
+    # Defaults include known dev ports + localhost any port.
+    _default_cors_origins = [
+        "http://localhost:5175",
+        "http://localhost:5176",
+        r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+    ]
+    _cors_origins_raw = os.getenv("CORS_ALLOWED_ORIGINS", "").strip()
+    if _cors_origins_raw:
+        _cors_origins = [
+            item.strip() for item in _cors_origins_raw.split(",") if item.strip()
+        ]
+        _env_cors_origins = [
+            origin for origin in _cors_origins if origin != "*"
+        ]
+        CORS_ALLOWED_ORIGINS = _env_cors_origins + [
+            origin for origin in _default_cors_origins
+            if origin not in _env_cors_origins
+        ]
+    else:
+        CORS_ALLOWED_ORIGINS = _default_cors_origins
+
+    # Cross-site cookies for HTTPS requests from frontend.
+    SESSION_COOKIE_SAMESITE = "None"
+    SESSION_COOKIE_SECURE = True
+    JWT_COOKIE_SAMESITE = "None"
+    JWT_COOKIE_SECURE = True

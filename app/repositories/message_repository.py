@@ -8,13 +8,16 @@ def add_contact(username, contact):
 def get_contacts(username):
     return list(redis_client.smembers(f"contacts:{username}"))
 
-def push_message(sender, recipient, encrypted_message, encrypted_key):
-    data = json.dumps({
+def build_message_payload(sender, encrypted_message, encrypted_key):
+    return {
         "from": sender,
         "message": encrypted_message,
         "encrypted_key": encrypted_key,
         "timestamp": datetime.utcnow().isoformat()
-    })
+    }
+
+def push_message_payload(recipient, payload):
+    data = json.dumps(payload)
     redis_client.rpush(f"inbox:{recipient}", data)
 
 def pop_messages(username):

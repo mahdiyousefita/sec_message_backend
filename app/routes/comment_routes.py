@@ -1,14 +1,13 @@
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 
-from app.repositories.vote_repository import upsert_vote
-from app.schemas.comment_schema import CommentResponseSchema
 from app.services import comment_service
-from app.services.comment_service import add_comment, get_post_comments
+from app.services.comment_service import add_comment
 from app.models.user_model import User
 
 
 comment_bp = Blueprint("comments", __name__)
+
 
 @comment_bp.route("/posts/<int:post_id>/comments", methods=["POST"])
 @jwt_required()
@@ -32,23 +31,14 @@ def create_comment(post_id):
             "id": comment.id,
             "message": "Comment created"
         }), 201
-
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
 
 
 @comment_bp.route("/posts/<int:post_id>/comments", methods=["GET"])
 def list_comments(post_id):
-    comments = get_post_comments(post_id)
+    page = request.args.get("page", default=1, type=int)
+    page_size = request.args.get("page_size", default=10, type=int)
+
+    comments = comment_service.get_comments_tree_by_post(post_id, page, page_size)
     return jsonify(comments), 200
-
-
-@comment_bp.route("/posts/<int:post_id>/comments", methods=["GET"])
-def get_post_comments(post_id):
-    page = int(request.args.get("page", 1))
-    page_size = int(request.args.get("page_size", 10))
-
-    comments = comment_service.get_comments_tree_by_post(
-        post_id, page, page_size)
-
-    return CommentResponseSchema(many=True).dump(comments), 200
