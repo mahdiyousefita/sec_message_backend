@@ -10,7 +10,7 @@ Authentication
 - Auth type: JWT Bearer token.
 - Include for protected endpoints:
   Authorization: Bearer <access_token>
-- Access token is returned by POST /api/auth/login.
+- Access token is returned by POST /api/auth/login and POST /api/auth/refresh.
 
 Common Error Format
 -------------------
@@ -33,21 +33,27 @@ GET /
 POST /api/auth/register
 - Description: Register a new user.
 - Auth: No
+- Content-Type: application/json
 - Request JSON:
   {
     "username": "alice",
     "password": "pass123",
-    "public_key": "-----BEGIN PUBLIC KEY-----..."
+    "public_key": "-----BEGIN PUBLIC KEY-----...",
+    "name": "Alice"
   }
+- Notes:
+  - `name` is optional. If omitted, it defaults to `username`.
 - Success: 201
   {"message": "User registered"}
 - Errors: 400
   {"error": "Missing fields"}
+  {"error": "Name must be a non-empty string"}
   {"error": "Username already exists"}
 
 POST /api/auth/login
 - Description: Login user and return tokens.
 - Auth: No
+- Content-Type: application/json
 - Request JSON:
   {
     "username": "alice",
@@ -61,23 +67,46 @@ POST /api/auth/login
 - Errors: 401
   {"error": "Invalid credentials"}
 
+Refresh Token
+- Purpose: Used to get a new access token after the access token expires.
+- Issued by: POST /api/auth/login (`refresh_token` field in response).
+- Endpoint (implemented):
+  POST /api/auth/refresh
+- Alias (implemented for compatibility):
+  POST /api/auth/token
+- Auth:
+  - Send refresh token in Authorization header:
+    Authorization: Bearer <refresh_token>
+- Request Body:
+  - None required.
+- Success: 200
+  {
+    "access_token": "<jwt>"
+  }
+- Errors:
+  401 missing/expired/invalid token
+  422 wrong token type (for example, access token sent instead of refresh token)
 
-3) Contacts
------------
+
+3) Contacts (Compatibility Layer)
+---------------------------------
 POST /api/contacts
-- Description: Add contact to current user's contact list.
+- Description: Legacy endpoint. Internally maps to follow behavior.
 - Auth: Yes
+- Content-Type: application/json
 - Request JSON:
   {
     "contact": "bob"
   }
 - Success: 200
   {"message": "Contact added"}
-- Errors: 400
+- Errors:
+  400 {"error": "Invalid JSON body"}
   {"error": "Contact not found"}
+  {"error": "You cannot follow yourself"}
 
 GET /api/contacts
-- Description: List current user's contacts.
+- Description: Legacy endpoint. Returns usernames the requester is following.
 - Auth: Yes
 - Success: 200
   {
@@ -85,7 +114,7 @@ GET /api/contacts
   }
 
 GET /api/contacts/{username}/public-key
-- Description: Get public key for a contact only if user is already in requester's contact list.
+- Description: Get public key only if requester follows target user.
 - Auth: Yes
 - Success: 200
   {"public_key": "-----BEGIN PUBLIC KEY-----..."}
@@ -94,7 +123,125 @@ GET /api/contacts/{username}/public-key
   403 {"error": "Not in your contacts"}
 
 
-4) Messages (HTTP)
+4) Profiles
+-----------
+GET /api/profiles/me
+- Description: Get current authenticated user's profile.
+- Auth: Yes
+- Success: 200
+  {
+    "username": "alice",
+    "name": "Alice",
+    "bio": "Hello there",
+    "profile_image_url": "http://127.0.0.1:9000/media/profiles/1/uuid.jpeg",
+    "followers_count": 10,
+    "following_count": 5,
+    "posts_count": 12
+  }
+- Errors:
+  401 JWT auth error (missing/invalid/expired token)
+
+PUT /api/profiles/me
+- Description: Update current user's profile fields and optionally upload profile image.
+- Auth: Yes
+- Content-Type:
+  - application/json (for text fields)
+  - multipart/form-data (for text fields + file upload)
+- Request JSON example:
+  {
+    "name": "Alice Cooper",
+    "bio": "Building DinoSocial"
+  }
+- Request multipart fields:
+  - name: optional string
+  - bio: optional string
+  - profile_image or avatar: optional file (image/jpeg, image/png, image/webp)
+- Success: 200
+  {
+    "username": "alice",
+    "name": "Alice Cooper",
+    "bio": "Building DinoSocial",
+    "profile_image_url": "http://127.0.0.1:9000/media/profiles/1/uuid.jpeg",
+    "followers_count": 10,
+    "following_count": 5,
+    "posts_count": 12
+  }
+- Errors:
+  400 {"error": "Invalid JSON body"}
+  400 {"error": "At least one field is required"}
+  400 {"error": "Name must be a non-empty string"}
+  400 {"error": "Bio must be a string"}
+  400 {"error": "Profile image file is required"}
+  400 {"error": "Unsupported media type: ..."}
+  401 JWT auth error (missing/invalid/expired token)
+
+GET /api/profiles/{username}
+- Description: Get a user's public profile by username.
+- Auth: No
+- Success: 200
+  {
+    "username": "bob",
+    "name": "Bob",
+    "bio": "",
+    "profile_image_url": null,
+    "followers_count": 3,
+    "following_count": 7,
+    "posts_count": 2
+  }
+- Errors:
+  404 {"error": "User not found"}
+
+GET /api/profiles/{username}/posts
+- Description: List posts published by specific user (paginated).
+- Auth: No
+- Query Params:
+  page (int, default: 1)
+  limit (int, default: 10, max effective value: 50)
+- Success: 200
+  {
+    "page": 1,
+    "limit": 10,
+    "total": 2,
+    "posts": [
+      {
+        "id": 10,
+        "text": "My post",
+        "author": 2,
+        "created_at": "2026-02-12T10:00:00.000000",
+        "media": []
+      }
+    ]
+  }
+- Errors:
+  404 {"error": "User not found"}
+
+
+5) Follows
+----------
+POST /api/follows/{username}
+- Description: Follow a user by username.
+- Auth: Yes
+- Success: 200
+  {"message": "Followed"}
+  {"message": "Already following"}
+- Errors:
+  404 {"error": "User not found"}
+  400 {"error": "You cannot follow yourself"}
+  401 JWT auth error (missing/invalid/expired token)
+
+DELETE /api/follows/{username}
+- Description: Unfollow a user by username.
+- Auth: Yes
+- Success: 200
+  {"message": "Unfollowed"}
+  {"message": "Not following"}
+- Errors:
+  404 {"error": "User not found"}
+  400 {"error": "You cannot unfollow yourself"}
+  401 JWT auth error (missing/invalid/expired token)
+
+
+6) Messages (HTTP)
 ------------------
 POST /api/messages/send
 - Description: Deprecated for sending.
@@ -118,15 +265,20 @@ GET /api/messages/inbox
   }
 
 
-5) Posts
+7) Posts
 --------
 POST /api/posts
-- Description: Create text post (JSON only, no media upload in current route).
+- Description: Create a new text post for the authenticated user.
 - Auth: Yes
+- Content-Type: application/json
 - Request JSON:
   {
     "text": "Hello world"
   }
+- Request Field Rules:
+  - text: required string
+  - Empty or whitespace-only values are rejected.
+  - Text is trimmed before storing.
 - Success: 201
   {
     "message": "Post created successfully",
@@ -135,13 +287,20 @@ POST /api/posts
 - Errors:
   400 {"error": "Invalid JSON body"}
   400 {"error": "Text is required"}
+  400 {"error": "User not found"}
+  401 JWT auth error (missing/invalid/expired token)
+- Notes:
+  - Current HTTP route is JSON-only (no multipart/form-data upload on this endpoint yet).
+  - Service layer includes media handling, but this route currently sends an empty media list.
 
 GET /api/posts
 - Description: List posts (paginated).
 - Auth: No (currently public)
 - Query Params:
-  page (default: 1)
-  limit (default: 10, max: 50)
+  page (int, default: 1)
+  limit (int, default: 10, max effective value: 50)
+- Behavior:
+  - If limit > 50, response limit is capped to 50.
 - Success: 200
   {
     "page": 1,
@@ -163,18 +322,25 @@ GET /api/posts
       }
     ]
   }
+- Notes:
+  - `author` is the numeric user id of the post creator.
 
 
-6) Comments
+8) Comments
 -----------
 POST /api/posts/{post_id}/comments
-- Description: Create comment on post (supports reply via parent_id).
+- Description: Create a comment for a post (supports replies via `parent_id`).
 - Auth: Yes
+- Content-Type: application/json
 - Request JSON:
   {
     "text": "Nice post",
     "parent_id": null
   }
+- Request Field Rules:
+  - text: required string
+  - Empty or whitespace-only values are rejected.
+  - parent_id: optional integer. If provided, it must reference an existing comment on the same post.
 - Success: 201
   {
     "id": 12,
@@ -183,34 +349,72 @@ POST /api/posts/{post_id}/comments
 - Errors:
   404 {"error": "User not found"}
   400 {"error": "Comment text is required"}
+  400 {"error": "Post not found"}
+  400 {"error": "Invalid parent comment"}
+  401 JWT auth error (missing/invalid/expired token)
 
 GET /api/posts/{post_id}/comments
-- Description: Fetch comments tree for a post.
+- Description: Fetch a paginated tree of comments for a post.
 - Auth: No
-- Response: 200 JSON list/tree of comments.
+- Query Params:
+  page (int, default: 1)
+  page_size (int, default: 10)
+- Success: 200
+  [
+    {
+      "id": 12,
+      "author_id": 1,
+      "author": "alice",
+      "text": "Root comment",
+      "score": 3,
+      "created_at": "Wed, 12 Feb 2026 12:34:56 GMT",
+      "parent_id": null,
+      "replies": [
+        {
+          "id": 13,
+          "author_id": 2,
+          "author": "bob",
+          "text": "Reply comment",
+          "score": 1,
+          "created_at": "Wed, 12 Feb 2026 12:40:00 GMT",
+          "parent_id": 12,
+          "replies": []
+        }
+      ]
+    }
+  ]
+- Notes:
+  - Response contains only root comments for the requested page; each root includes its nested replies.
+  - Comments are ordered by score (desc), then creation time (newer first).
 
-Important note:
-- The code currently defines GET /api/posts/{post_id}/comments twice in `app/routes/comment_routes.py`.
-- This is a routing conflict and should be consolidated to one handler.
 
-
-7) Votes
+9) Votes
 --------
 POST /api/votes
-- Description: Vote on post/comment.
+- Description: Create or update the current user's vote on a post/comment.
 - Auth: Yes
+- Content-Type: application/json
 - Request JSON:
   {
     "target_type": "post",
     "target_id": 1,
     "value": 1
   }
+- Request Field Rules:
+  - target_type: required string, allowed values: `post`, `comment`
+  - target_id: required integer
+  - value: required integer, allowed values: `1` (upvote) or `-1` (downvote)
 - Success: 200
   {"message": "Vote recorded"}
 - Errors:
   400 {"error": "Invalid target type"}
   400 {"error": "Invalid vote value"}
   400 {"error": "User not found"}
+  401 JWT auth error (missing/invalid/expired token)
+- Notes:
+  - Voting is idempotent per user+target. Sending the same vote value again keeps state unchanged and still returns 200.
+  - If a previous vote exists with a different value, it is updated (upsert behavior) instead of creating a duplicate vote.
+  - Current implementation does not return a 404 when `target_id` does not exist.
 
 
 Socket API (Messaging)
@@ -297,4 +501,3 @@ Test Coverage Added
 - Covered scenarios:
   1) Online recipient receives `new_message` immediately.
   2) Offline recipient receives `pending_messages` after connecting.
-

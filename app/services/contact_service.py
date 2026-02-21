@@ -1,10 +1,17 @@
-from app.repositories import user_repository, message_repository
+from app.services import follow_service
+
 
 def add_contact(username, contact):
-    if not user_repository.get_by_username(contact):
+    if not isinstance(contact, str) or not contact.strip():
         raise ValueError("Contact not found")
 
-    message_repository.add_contact(username, contact)
+    try:
+        follow_service.follow_by_username(username, contact.strip())
+    except ValueError as e:
+        if str(e) == "User not found":
+            raise ValueError("Contact not found")
+        raise
+
 
 def get_contacts(username):
-    return message_repository.get_contacts(username)
+    return follow_service.get_following_for_username(username)

@@ -16,6 +16,8 @@ from app.routes.vote_routes import vote_bp
 from app.routes.auth_routes import auth_bp
 from app.routes.contact_routes import contact_bp
 from app.routes.message_routes import message_bp
+from app.routes.profile_routes import profile_bp
+from app.routes.follow_routes import follow_bp
 
 
 def create_app():
@@ -46,6 +48,8 @@ def create_app():
     app.register_blueprint(post_bp, url_prefix="/api")
     app.register_blueprint(comment_bp, url_prefix="/api")
     app.register_blueprint(vote_bp, url_prefix="/api")
+    app.register_blueprint(profile_bp, url_prefix="/api")
+    app.register_blueprint(follow_bp, url_prefix="/api")
 
     with app.app_context():
         db.create_all()

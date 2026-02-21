@@ -8,3 +8,6 @@ venv/
 deploy.sh
 /deploy_rsync.sh
 /exclude.txt
+
+__pycache__/
+*.pyc

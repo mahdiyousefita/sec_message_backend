@@ -49,6 +49,9 @@ class TestSocketMessageFlow(unittest.TestCase):
         import app.routes.contact_routes as contact_routes
         import app.socket_events as socket_events
 
+        socket_events._registered = False
+        socket_events._online_users.clear()
+
         cls.app = create_app()
         cls.db = db
         cls.socketio = socketio

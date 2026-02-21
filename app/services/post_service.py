@@ -6,6 +6,7 @@ from app.extensions.minio_client import get_minio_client
 from app.models.post_model import Post
 from app.repositories.post_repository import create_post_by_username
 from app.repositories.media_repository import add_media
+from app.repositories import user_repository
 from app.db import db
 
 
@@ -16,6 +17,26 @@ ALLOWED_MIME_TYPES = {
     "image/png",
     "image/webp"
 }
+
+
+def _serialize_post(post):
+    return {
+        "id": post.id,
+        "text": post.text,
+        "author": post.author_id,
+        "created_at": post.created_at.isoformat(),
+        "media": [
+            {
+                "id": media.id,
+                "url": f"{current_app.config['MINIO_PUBLIC_BASE_URL']}/"
+                       f"{current_app.config['MINIO_BUCKET']}/"
+                       f"{media.object_name}",
+                "mime_type": media.mime_type
+            }
+            for media in post.media
+        ]
+    }
+
 
 def create_post_with_media(username, text, files):
     if not text or not text.strip():
@@ -68,29 +89,37 @@ def get_posts(page: int, limit: int):
     total = query.count()
     posts = query.offset((page - 1) * limit).limit(limit).all()
 
-    result = []
-    for post in posts:
-        result.append({
-            "id": post.id,
-            "text": post.text,
-            "author": post.author_id,
-            "created_at": post.created_at.isoformat(),
-            # "score": post.score,
-            "media": [
-                {
-                    "id": media.id,
-                    "url": f"{current_app.config['MINIO_PUBLIC_BASE_URL']}/"
-                           f"{current_app.config['MINIO_BUCKET']}/"
-                           f"{media.object_name}",
-                    "mime_type": media.mime_type
-                }
-                for media in post.media
-            ]
-        })
+    result = [_serialize_post(post) for post in posts]
 
     return {
         "page": page,
         "limit": limit,
         "total": total,
         "posts": result
+    }
+
+
+def get_posts_by_username(username: str, page: int, limit: int):
+    user = user_repository.get_by_username(username)
+    if not user:
+        raise ValueError("User not found")
+
+    if limit > 50:
+        limit = 50
+
+    query = (
+        Post.query
+        .filter(Post.author_id == user.id)
+        .options(joinedload(Post.media))
+        .order_by(Post.created_at.desc())
+    )
+
+    total = query.count()
+    posts = query.offset((page - 1) * limit).limit(limit).all()
+
+    return {
+        "page": page,
+        "limit": limit,
+        "total": total,
+        "posts": [_serialize_post(post) for post in posts]
     }
