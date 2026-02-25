@@ -11,3 +11,4 @@ deploy.sh
 
 __pycache__/
 *.pyc
+tets_images
