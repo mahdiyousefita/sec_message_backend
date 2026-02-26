@@ -3,7 +3,10 @@ Sec Messenger Backend - API Documentation
 
 Base URL
 --------
-- Local: http://127.0.0.1:5000
+- Local API: http://127.0.0.1:5000
+- Production API: https://api.dinosocial.ir
+- Frontend/Web: https://dinosocial.ir (not API origin)
+- Production media URLs are generated from `APP_PUBLIC_BASE_URL`.
 
 Authentication
 --------------
@@ -11,6 +14,15 @@ Authentication
 - Include for protected endpoints:
   Authorization: Bearer <access_token>
 - Access token is returned by POST /api/auth/login and POST /api/auth/refresh.
+
+Live Test Account (created February 25, 2026)
+---------------------------------------------
+- Base URL: https://api.dinosocial.ir
+- Username: codex_verify_20260225191422
+- Password: CodexPost!2026
+- Refresh token:
+  eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJmcmVzaCI6ZmFsc2UsImlhdCI6MTc3MjAzNDI2NywianRpIjoiMjljZWQwMDEtN2YzZC00MjYxLWEyY2YtNTUzOTVkZTM1NDUzIiwidHlwZSI6InJlZnJlc2giLCJzdWIiOiJjb2RleF92ZXJpZnlfMjAyNjAyMjUxOTE0MjIiLCJuYmYiOjE3NzIwMzQyNjcsImNzcmYiOiJlZWUwNmNlNi1mNzhlLTQ5YTMtOTUzNi1hYWJjMjFlZjhhNWMiLCJleHAiOjE3NzQ2MjYyNjd9.Ahlw8GK4clZUmF_nQybKaFouhPWCJsS91XpM-Olk6PQ
+- Note: rotate/remove this credential after testing (refresh tokens should not stay in docs long-term).
 
 Common Error Format
 -------------------
@@ -26,6 +38,23 @@ GET /
 - Description: Render backend index page.
 - Auth: No
 - Response: HTML page (app/templates/index.html)
+
+GET /media/{object_name}
+- Description: Stream a media object from configured storage bucket.
+- Auth: No
+- Methods: GET, HEAD
+- Success:
+  - 200 binary stream (image/video) for GET
+  - 200 headers-only for HEAD
+  - 304 when browser/CDN cache is valid (If-None-Match / If-Modified-Since)
+- Response headers (important for performance):
+  - Cache-Control: `public, max-age=<MEDIA_CACHE_MAX_AGE_SECONDS>[, immutable]`
+  - ETag
+  - Last-Modified
+  - Accept-Ranges: bytes
+- Errors:
+  404 {"error": "Media not found"}
+  503 {"error": "Media unavailable"}
 
 
 2) Auth
@@ -133,7 +162,7 @@ GET /api/profiles/me
     "username": "alice",
     "name": "Alice",
     "bio": "Hello there",
-    "profile_image_url": "http://127.0.0.1:9000/media/profiles/1/uuid.jpeg",
+    "profile_image_url": "https://api.dinosocial.ir/media/profiles/1/uuid.jpeg",
     "followers_count": 10,
     "following_count": 5,
     "posts_count": 12
@@ -161,7 +190,7 @@ PUT /api/profiles/me
     "username": "alice",
     "name": "Alice Cooper",
     "bio": "Building DinoSocial",
-    "profile_image_url": "http://127.0.0.1:9000/media/profiles/1/uuid.jpeg",
+    "profile_image_url": "https://api.dinosocial.ir/media/profiles/1/uuid.jpeg",
     "followers_count": 10,
     "following_count": 5,
     "posts_count": 12
@@ -206,7 +235,12 @@ GET /api/profiles/{username}/posts
       {
         "id": 10,
         "text": "My post",
-        "author": 2,
+        "author": {
+          "id": 2,
+          "username": "bob",
+          "name": "Bob",
+          "profile_image_url": null
+        },
         "created_at": "2026-02-12T10:00:00.000000",
         "media": []
       }
@@ -268,17 +302,27 @@ GET /api/messages/inbox
 7) Posts
 --------
 POST /api/posts
-- Description: Create a new text post for the authenticated user.
+- Description: Create a new post for the authenticated user (text with optional media).
 - Auth: Yes
-- Content-Type: application/json
+- Content-Type:
+  - application/json (text-only)
+  - multipart/form-data (text + optional media upload)
 - Request JSON:
   {
     "text": "Hello world"
   }
+- Request multipart fields:
+  - text: required string
+  - media / media[] / files / file: optional file(s), max 8 total
 - Request Field Rules:
   - text: required string
   - Empty or whitespace-only values are rejected.
   - Text is trimmed before storing.
+  - Max 8 media files per post.
+  - Supported image types: image/jpeg, image/png, image/webp
+  - Supported video types: video/mp4, video/quicktime
+  - Videos must be 30 minutes (1800s) or shorter.
+  - If MinIO/object-storage is unavailable and `MEDIA_LOCAL_FALLBACK_ENABLED=true`, media is stored under `/static/uploads/posts/...`.
 - Success: 201
   {
     "message": "Post created successfully",
@@ -287,11 +331,13 @@ POST /api/posts
 - Errors:
   400 {"error": "Invalid JSON body"}
   400 {"error": "Text is required"}
+  400 {"error": "Maximum 8 media files allowed"}
+  400 {"error": "Unsupported media type: ..."}
+  400 {"error": "Could not determine video duration"}
+  400 {"error": "Video must be 30 minutes or shorter"}
   400 {"error": "User not found"}
+  503 {"error": "Media storage is unavailable"} (when fallback is disabled or local fallback also fails)
   401 JWT auth error (missing/invalid/expired token)
-- Notes:
-  - Current HTTP route is JSON-only (no multipart/form-data upload on this endpoint yet).
-  - Service layer includes media handling, but this route currently sends an empty media list.
 
 GET /api/posts
 - Description: List posts (paginated).
@@ -310,12 +356,17 @@ GET /api/posts
       {
         "id": 1,
         "text": "Hello",
-        "author": 1,
+        "author": {
+          "id": 1,
+          "username": "alice",
+          "name": "Alice",
+          "profile_image_url": "https://api.dinosocial.ir/media/profiles/1/uuid.jpeg"
+        },
         "created_at": "2026-02-12T10:00:00.000000",
         "media": [
           {
             "id": 1,
-            "url": "http://127.0.0.1:9000/media/posts/1/uuid.jpeg",
+            "url": "https://api.dinosocial.ir/media/posts/1/uuid.jpeg",
             "mime_type": "image/jpeg"
           }
         ]
@@ -323,7 +374,10 @@ GET /api/posts
     ]
   }
 - Notes:
-  - `author` is the numeric user id of the post creator.
+  - `author` is an object with `id`, `username`, `name`, and `profile_image_url`.
+  - `author.profile_image_url` is `null` when the author has no profile image.
+  - `media.url` points to backend media route (`GET /media/{object_name}`), not localhost MinIO.
+  - If local media fallback is enabled and used, URL can be `/static/uploads/...`.
 
 
 8) Comments
@@ -363,8 +417,12 @@ GET /api/posts/{post_id}/comments
   [
     {
       "id": 12,
-      "author_id": 1,
-      "author": "alice",
+      "author": {
+        "id": 1,
+        "username": "alice",
+        "name": "Alice",
+        "profile_image_url": "https://api.dinosocial.ir/media/profiles/1/uuid.jpeg"
+      },
       "text": "Root comment",
       "score": 3,
       "created_at": "Wed, 12 Feb 2026 12:34:56 GMT",
@@ -372,8 +430,12 @@ GET /api/posts/{post_id}/comments
       "replies": [
         {
           "id": 13,
-          "author_id": 2,
-          "author": "bob",
+          "author": {
+            "id": 2,
+            "username": "bob",
+            "name": "Bob",
+            "profile_image_url": null
+          },
           "text": "Reply comment",
           "score": 1,
           "created_at": "Wed, 12 Feb 2026 12:40:00 GMT",

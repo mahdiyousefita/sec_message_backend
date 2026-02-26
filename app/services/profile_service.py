@@ -1,6 +1,6 @@
 import uuid
 
-from flask import current_app
+from flask import current_app, has_request_context, request
 
 from app.db import db
 from app.extensions.minio_client import get_minio_client
@@ -22,11 +22,13 @@ def _build_profile_image_url(image_object_name: str | None):
     if not image_object_name:
         return None
 
-    return (
-        f"{current_app.config['MINIO_PUBLIC_BASE_URL']}/"
-        f"{current_app.config['MINIO_BUCKET']}/"
-        f"{image_object_name}"
-    )
+    base_url = current_app.config.get("APP_PUBLIC_BASE_URL", "").rstrip("/")
+    if not base_url and has_request_context():
+        base_url = request.url_root.rstrip("/")
+
+    if base_url:
+        return f"{base_url}/media/{image_object_name}"
+    return f"/media/{image_object_name}"
 
 
 def _get_or_create_profile(user):
@@ -114,4 +116,3 @@ def update_profile(
 
 def get_profile_posts(username: str, page: int, limit: int):
     return get_posts_by_username(username, page, limit)
-

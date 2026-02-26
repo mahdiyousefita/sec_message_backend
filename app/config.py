@@ -1,4 +1,19 @@
 import os
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    def load_dotenv(*args, **kwargs):
+        return False
+
+
+load_dotenv()
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 class Config:
@@ -11,11 +26,25 @@ class Config:
     MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "admin")
     MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "supersecret")
     MINIO_BUCKET = os.getenv("MINIO_BUCKET", "media")
-    MINIO_SECURE = False
+    MINIO_SECURE = _env_bool("MINIO_SECURE", False)
+    MINIO_CONNECT_TIMEOUT = float(os.getenv("MINIO_CONNECT_TIMEOUT", "5"))
+    MINIO_READ_TIMEOUT = float(os.getenv("MINIO_READ_TIMEOUT", "20"))
+    MINIO_OPERATION_TIMEOUT = float(os.getenv("MINIO_OPERATION_TIMEOUT", "8"))
+    MINIO_HTTP_POOL_MAXSIZE = int(os.getenv("MINIO_HTTP_POOL_MAXSIZE", "32"))
     MINIO_PUBLIC_BASE_URL = os.getenv(
         "MINIO_PUBLIC_BASE_URL",
         "http://127.0.0.1:9000"
     )
+    APP_PUBLIC_BASE_URL = os.getenv("APP_PUBLIC_BASE_URL", "").strip()
+    MEDIA_LOCAL_FALLBACK_ENABLED = _env_bool(
+        "MEDIA_LOCAL_FALLBACK_ENABLED",
+        True,
+    )
+    MEDIA_CACHE_MAX_AGE_SECONDS = int(
+        os.getenv("MEDIA_CACHE_MAX_AGE_SECONDS", str(7 * 24 * 60 * 60))
+    )
+    MEDIA_CACHE_IMMUTABLE = _env_bool("MEDIA_CACHE_IMMUTABLE", True)
+    MEDIA_STREAM_CHUNK_SIZE = int(os.getenv("MEDIA_STREAM_CHUNK_SIZE", str(256 * 1024)))
 
     # Credentialed CORS cannot use a wildcard origin.
     # Defaults include known dev ports + localhost any port.
