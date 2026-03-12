@@ -352,6 +352,28 @@ POST /api/messages/send
 - Response: 410
   {"error": "HTTP send is deprecated. Use socket event 'send_message'."}
 
+POST /api/messages/attachments
+- Description: Upload a message attachment (image, video, voice, or file) and get metadata for Socket send.
+- Auth: Yes
+- Content-Type: multipart/form-data
+- Request multipart fields:
+  - `file` or `attachment`: required file
+- Success: 201
+  {
+    "attachment": {
+      "type": "image",
+      "mime_type": "image/webp",
+      "file_name": "chat.webp",
+      "size_bytes": 10240,
+      "object_name": "messages/alice/uuid.webp",
+      "url": "https://api.example.com/media/messages/alice/uuid.webp"
+    }
+  }
+- Errors:
+  400 {"error": "Attachment file is required"}
+  400 {"error": "Unsupported attachment type: ..."}
+  503 {"error": "Media storage is unavailable"}
+
 GET /api/messages/inbox
 - Description: Pop and return queued inbox messages for current user.
 - Auth: Yes
@@ -360,8 +382,10 @@ GET /api/messages/inbox
     "messages": [
       {
         "from": "alice",
+        "type": "text",
         "message": "<encrypted_message>",
         "encrypted_key": "<encrypted_key>",
+        "attachment": null,
         "timestamp": "2026-02-12T12:34:56.123456"
       }
     ]
@@ -555,6 +579,13 @@ Transport
 ---------
 - Socket.IO server mounted on default namespace: /
 - Development run command uses `socketio.run(app, debug=True)`.
+- Relevant server config (environment variables):
+  - `CORS_ALLOWED_ORIGINS`
+  - `SOCKETIO_MESSAGE_QUEUE` (required when running multiple instances)
+  - `SOCKETIO_PING_TIMEOUT` (default: 25)
+  - `SOCKETIO_PING_INTERVAL` (default: 20)
+  - `SOCKETIO_LOGGER`, `SOCKETIO_ENGINEIO_LOGGER`
+  - `MESSAGE_ATTACHMENT_MAX_SIZE_BYTES` (default: 26214400)
 
 Socket Authentication
 ---------------------
@@ -579,11 +610,24 @@ If queued messages exist, server also emits:
     "messages": [
       {
         "from": "bob",
-        "message": "<encrypted_message>",
+        "type": "voice",
+        "message": "<encrypted_message_or_caption>",
         "encrypted_key": "<encrypted_key>",
+        "attachment": {
+          "type": "voice",
+          "url": "https://api.example.com/media/messages/bob/uuid.m4a",
+          "mime_type": "audio/mp4"
+        },
         "timestamp": "2026-02-12T12:34:56.123456"
       }
     ]
+  }
+
+Presence events:
+- `user_status`
+  {
+    "username": "bob",
+    "online": true
   }
 
 Send Message Event
@@ -592,14 +636,27 @@ Client emit:
 - `send_message`
   {
     "to": "bob",
-    "message": "<encrypted_message>",
-    "encrypted_key": "<encrypted_key>"
+    "type": "image",
+    "message": "<encrypted_message_or_caption>",
+    "encrypted_key": "<encrypted_key>",
+    "attachment": {
+      "type": "image",
+      "url": "https://api.example.com/media/messages/alice/uuid.webp",
+      "mime_type": "image/webp",
+      "file_name": "chat.webp",
+      "size_bytes": 10240
+    }
+  }
+- `get_user_status`
+  {
+    "username": "bob"
   }
 
 Server emits to sender on success:
 - `message_sent`
   {
     "to": "bob",
+    "type": "image",
     "timestamp": "2026-02-12T12:34:56.123456"
   }
 
@@ -607,18 +664,26 @@ Server emits to recipient:
 - `new_message`
   {
     "from": "alice",
-    "message": "<encrypted_message>",
+    "type": "image",
+    "message": "<encrypted_message_or_caption>",
     "encrypted_key": "<encrypted_key>",
+    "attachment": {
+      "type": "image",
+      "url": "https://api.example.com/media/messages/alice/uuid.webp",
+      "mime_type": "image/webp"
+    },
     "timestamp": "2026-02-12T12:34:56.123456"
   }
 
 Server emits to sender on validation/auth errors:
 - `message_error`
   {"error": "Recipient not found"}
-  {"error": "Message is required"}
+  {"error": "Message or attachment is required"}
   {"error": "Encrypted key is required"}
   {"error": "Unauthorized"}
   {"error": "Invalid payload"}
+  {"error": "Invalid attachment payload"}
+  {"error": "Invalid message type"}
 
 Delivery Rules
 --------------
