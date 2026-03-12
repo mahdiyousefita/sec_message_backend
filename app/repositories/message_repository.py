@@ -2,23 +2,30 @@ import json
 from datetime import datetime
 from app.extensions.redis_client import redis_client
 
+
 def add_contact(username, contact):
     redis_client.sadd(f"contacts:{username}", contact)
+
 
 def get_contacts(username):
     return list(redis_client.smembers(f"contacts:{username}"))
 
-def build_message_payload(sender, encrypted_message, encrypted_key):
+
+def build_message_payload(sender, encrypted_message, encrypted_key, attachment=None, message_type="text"):
     return {
         "from": sender,
+        "type": message_type,
         "message": encrypted_message,
         "encrypted_key": encrypted_key,
+        "attachment": attachment,
         "timestamp": datetime.utcnow().isoformat()
     }
+
 
 def push_message_payload(recipient, payload):
     data = json.dumps(payload)
     redis_client.rpush(f"inbox:{recipient}", data)
+
 
 def pop_messages(username):
     key = f"inbox:{username}"

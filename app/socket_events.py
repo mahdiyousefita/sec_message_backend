@@ -67,12 +67,30 @@ def register_socket_events():
             emit("pending_messages", {"messages": pending})
 
         emit("connected", {"username": username})
+        socketio.emit(
+            "user_status",
+            {"username": username, "online": True},
+            skip_sid=request.sid,
+        )
 
     @socketio.on("disconnect")
     def handle_disconnect():
         username = session.get("username")
         if username:
             _set_user_offline(username)
+            socketio.emit("user_status", {"username": username, "online": False})
+
+    @socketio.on("get_user_status")
+    def handle_get_user_status(data):
+        if not isinstance(data, dict) or not data.get("username"):
+            emit("message_error", {"error": "Invalid payload"})
+            return
+
+        target_username = data.get("username")
+        emit(
+            "user_status",
+            {"username": target_username, "online": is_user_online(target_username)},
+        )
 
     @socketio.on("send_message")
     def handle_send_message(data):
@@ -88,6 +106,13 @@ def register_socket_events():
         recipient = data.get("to")
         encrypted_message = data.get("message")
         encrypted_key = data.get("encrypted_key")
+        attachment = data.get("attachment")
+        message_type = data.get("type")
+
+        if attachment is not None and not isinstance(attachment, dict):
+            emit("message_error", {"error": "Invalid attachment payload"})
+            return
+
         should_persist = not is_user_online(recipient)
 
         try:
@@ -96,7 +121,9 @@ def register_socket_events():
                 recipient,
                 encrypted_message,
                 encrypted_key,
-                persist=should_persist
+                persist=should_persist,
+                attachment=attachment,
+                message_type=message_type,
             )
         except ValueError as exc:
             emit("message_error", {"error": str(exc)})
@@ -105,7 +132,7 @@ def register_socket_events():
         socketio.emit("new_message", payload, room=recipient)
         emit(
             "message_sent",
-            {"to": recipient, "timestamp": payload["timestamp"]}
+            {"to": recipient, "timestamp": payload["timestamp"], "type": payload["type"]}
         )
 
     _registered = True

@@ -34,6 +34,16 @@ class FakeRedis:
             return None
         return values.pop(0)
 
+    def lrange(self, key, start, end):
+        values = self._lists.get(key, [])
+        if end == -1:
+            end = len(values) - 1
+        return values[start:end + 1]
+
+    def delete(self, key):
+        self._lists.pop(key, None)
+        self._sets.pop(key, None)
+
 
 class TestApiRoutes(unittest.TestCase):
     @classmethod
@@ -931,6 +941,46 @@ class TestApiRoutes(unittest.TestCase):
         self.assertEqual(bob_payload["posts"][0]["author"]["username"], "bob")
         self.assertEqual(bob_payload["posts"][0]["author"]["name"], "bob")
         self.assertIsNone(bob_payload["posts"][0]["author"]["profile_image_url"])
+
+
+    def test_message_attachment_upload_success(self):
+        self._register("alice")
+        headers = self._auth_header("alice")
+
+        class FakeMinio:
+            def bucket_exists(self, *args, **kwargs):
+                return True
+
+            def put_object(self, **kwargs):
+                return None
+
+        with patch("app.services.message_service.get_minio_client", return_value=FakeMinio()):
+            response = self.client.post(
+                "/api/messages/attachments",
+                data={"file": (io.BytesIO(b"fake-image"), "chat.webp", "image/webp")},
+                headers=headers,
+                content_type="multipart/form-data",
+            )
+
+        self.assertEqual(response.status_code, 201)
+        body = response.get_json()["attachment"]
+        self.assertEqual(body["type"], "image")
+        self.assertEqual(body["mime_type"], "image/webp")
+        self.assertIn("/media/messages/alice/", body["url"])
+
+    def test_message_attachment_upload_rejects_unsupported_type(self):
+        self._register("alice")
+        headers = self._auth_header("alice")
+
+        response = self.client.post(
+            "/api/messages/attachments",
+            data={"file": (io.BytesIO(b"bin"), "x.bin", "application/octet-stream")},
+            headers=headers,
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Unsupported attachment type", response.get_json()["error"])
 
     def test_messages_routes_inbox_and_send_deprecated(self):
         self._register("alice")
