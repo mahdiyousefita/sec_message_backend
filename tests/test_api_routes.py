@@ -592,6 +592,285 @@ class TestApiRoutes(unittest.TestCase):
         after_unfollow_payload = profile_after_unfollow.get_json()
         self.assertEqual(after_unfollow_payload["followers_count"], 0)
 
+    def test_follow_status_endpoint(self):
+        self._register("alice")
+        self._register("bob")
+        alice_headers = self._auth_header("alice")
+
+        status_before = self.client.get("/api/follows/bob/status", headers=alice_headers)
+        self.assertEqual(status_before.status_code, 200)
+        self.assertFalse(status_before.get_json()["is_following"])
+
+        follow_resp = self.client.post("/api/follows/bob", headers=alice_headers)
+        self.assertEqual(follow_resp.status_code, 200)
+        self.assertEqual(follow_resp.get_json()["message"], "Followed")
+
+        status_after = self.client.get("/api/follows/bob/status", headers=alice_headers)
+        self.assertEqual(status_after.status_code, 200)
+        self.assertTrue(status_after.get_json()["is_following"])
+
+        missing_user = self.client.get(
+            "/api/follows/unknown/status",
+            headers=alice_headers,
+        )
+        self.assertEqual(missing_user.status_code, 404)
+        self.assertEqual(missing_user.get_json()["error"], "User not found")
+
+    def test_followers_and_following_endpoints_with_pagination(self):
+        self._register("alice")
+        self._register("bob")
+        self._register("charlie")
+        self._register("dave")
+
+        bob_headers = self._auth_header("bob")
+        charlie_headers = self._auth_header("charlie")
+        dave_headers = self._auth_header("dave")
+        alice_headers = self._auth_header("alice")
+
+        self.assertEqual(
+            self.client.post("/api/follows/alice", headers=bob_headers).status_code,
+            200,
+        )
+        self.assertEqual(
+            self.client.post("/api/follows/alice", headers=charlie_headers).status_code,
+            200,
+        )
+        self.assertEqual(
+            self.client.post("/api/follows/alice", headers=dave_headers).status_code,
+            200,
+        )
+        self.assertEqual(
+            self.client.post("/api/follows/bob", headers=alice_headers).status_code,
+            200,
+        )
+        self.assertEqual(
+            self.client.post("/api/follows/charlie", headers=alice_headers).status_code,
+            200,
+        )
+
+        followers_page_1 = self.client.get("/api/follows/alice/followers?page=1&limit=2")
+        self.assertEqual(followers_page_1.status_code, 200)
+        followers_payload_1 = followers_page_1.get_json()
+        self.assertEqual(followers_payload_1["page"], 1)
+        self.assertEqual(followers_payload_1["limit"], 2)
+        self.assertEqual(followers_payload_1["total"], 3)
+        self.assertEqual(len(followers_payload_1["users"]), 2)
+        self.assertEqual(followers_payload_1["users"][0]["username"], "bob")
+        self.assertEqual(followers_payload_1["users"][1]["username"], "charlie")
+
+        followers_page_2 = self.client.get("/api/follows/alice/followers?page=2&limit=2")
+        self.assertEqual(followers_page_2.status_code, 200)
+        followers_payload_2 = followers_page_2.get_json()
+        self.assertEqual(followers_payload_2["total"], 3)
+        self.assertEqual(len(followers_payload_2["users"]), 1)
+        self.assertEqual(followers_payload_2["users"][0]["username"], "dave")
+
+        following_list = self.client.get("/api/follows/alice/following?page=1&limit=10")
+        self.assertEqual(following_list.status_code, 200)
+        following_payload = following_list.get_json()
+        self.assertEqual(following_payload["total"], 2)
+        self.assertEqual(
+            [user["username"] for user in following_payload["users"]],
+            ["bob", "charlie"],
+        )
+
+        missing = self.client.get("/api/follows/unknown/followers")
+        self.assertEqual(missing.status_code, 404)
+        self.assertEqual(missing.get_json()["error"], "User not found")
+
+    def test_profile_image_replacement_deletes_previous_object(self):
+        self._register("alice")
+        headers = self._auth_header("alice")
+
+        class FakeMinio:
+            def __init__(self):
+                self.put_calls = []
+                self.remove_calls = []
+
+            def put_object(self, **kwargs):
+                self.put_calls.append(kwargs)
+                return None
+
+            def remove_object(self, **kwargs):
+                self.remove_calls.append(kwargs)
+                return None
+
+        fake_minio = FakeMinio()
+
+        with patch("app.services.profile_service.get_minio_client", return_value=fake_minio):
+            first_update = self.client.put(
+                "/api/profiles/me",
+                data={
+                    "profile_image": (
+                        io.BytesIO(b"first-image"),
+                        "first.webp",
+                        "image/webp",
+                    ),
+                },
+                headers=headers,
+                content_type="multipart/form-data",
+            )
+            self.assertEqual(first_update.status_code, 200)
+            first_payload = first_update.get_json()
+            first_image_url = first_payload["profile_image_url"]
+            self.assertIn("/media/profiles/1/images/", first_image_url)
+
+            second_update = self.client.put(
+                "/api/profiles/me",
+                data={
+                    "profile_image": (
+                        io.BytesIO(b"second-image"),
+                        "second.webp",
+                        "image/webp",
+                    ),
+                },
+                headers=headers,
+                content_type="multipart/form-data",
+            )
+            self.assertEqual(second_update.status_code, 200)
+            second_payload = second_update.get_json()
+            second_image_url = second_payload["profile_image_url"]
+            self.assertIn("/media/profiles/1/images/", second_image_url)
+            self.assertNotEqual(first_image_url, second_image_url)
+
+        old_object_name = first_image_url.split("/media/", 1)[1]
+        removed_object_names = [call["object_name"] for call in fake_minio.remove_calls]
+        self.assertIn(old_object_name, removed_object_names)
+
+    def test_profile_video_upload_and_replacement(self):
+        self._register("alice")
+        headers = self._auth_header("alice")
+
+        class FakeMinio:
+            def __init__(self):
+                self.put_calls = []
+                self.remove_calls = []
+
+            def put_object(self, **kwargs):
+                self.put_calls.append(kwargs)
+                return None
+
+            def remove_object(self, **kwargs):
+                self.remove_calls.append(kwargs)
+                return None
+
+        fake_minio = FakeMinio()
+
+        with (
+            patch("app.services.profile_service.get_minio_client", return_value=fake_minio),
+            patch(
+                "app.services.profile_service._get_mp4_duration_seconds",
+                side_effect=[4.0, 4.5],
+            ),
+        ):
+            first_update = self.client.put(
+                "/api/profiles/me",
+                data={
+                    "profile_video": (
+                        io.BytesIO(b"video-one"),
+                        "first.mp4",
+                        "video/mp4",
+                    ),
+                },
+                headers=headers,
+                content_type="multipart/form-data",
+            )
+            self.assertEqual(first_update.status_code, 200)
+            first_video_url = first_update.get_json()["profile_video_url"]
+            self.assertIn("/media/profiles/1/videos/", first_video_url)
+
+            second_update = self.client.put(
+                "/api/profiles/me",
+                data={
+                    "profile_video": (
+                        io.BytesIO(b"video-two"),
+                        "second.mp4",
+                        "video/mp4",
+                    ),
+                },
+                headers=headers,
+                content_type="multipart/form-data",
+            )
+            self.assertEqual(second_update.status_code, 200)
+            second_video_url = second_update.get_json()["profile_video_url"]
+            self.assertIn("/media/profiles/1/videos/", second_video_url)
+            self.assertNotEqual(first_video_url, second_video_url)
+
+        old_video_object_name = first_video_url.split("/media/", 1)[1]
+        removed_object_names = [call["object_name"] for call in fake_minio.remove_calls]
+        self.assertIn(old_video_object_name, removed_object_names)
+
+    def test_profile_video_duration_limit(self):
+        self._register("alice")
+        headers = self._auth_header("alice")
+
+        class FakeMinio:
+            def put_object(self, **kwargs):
+                return None
+
+            def remove_object(self, **kwargs):
+                return None
+
+        with (
+            patch("app.services.profile_service.get_minio_client", return_value=FakeMinio()),
+            patch("app.services.profile_service._get_mp4_duration_seconds", return_value=6.0),
+        ):
+            response = self.client.put(
+                "/api/profiles/me",
+                data={
+                    "profile_video": (
+                        io.BytesIO(b"video-data"),
+                        "too-long.mp4",
+                        "video/mp4",
+                    ),
+                },
+                headers=headers,
+                content_type="multipart/form-data",
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.get_json()["error"],
+            "Profile video must be 5 seconds or shorter",
+        )
+
+    def test_profile_video_size_limit(self):
+        self._register("alice")
+        headers = self._auth_header("alice")
+
+        class FakeMinio:
+            def put_object(self, **kwargs):
+                return None
+
+            def remove_object(self, **kwargs):
+                return None
+
+        original_limit = self.app.config.get("PROFILE_VIDEO_MAX_SIZE_BYTES")
+        self.app.config["PROFILE_VIDEO_MAX_SIZE_BYTES"] = 1024
+
+        try:
+            with (
+                patch("app.services.profile_service.get_minio_client", return_value=FakeMinio()),
+                patch("app.services.profile_service._get_mp4_duration_seconds", return_value=4.0),
+            ):
+                response = self.client.put(
+                    "/api/profiles/me",
+                    data={
+                        "profile_video": (
+                            io.BytesIO(b"x" * 2048),
+                            "too-large.mp4",
+                            "video/mp4",
+                        ),
+                    },
+                    headers=headers,
+                    content_type="multipart/form-data",
+                )
+        finally:
+            self.app.config["PROFILE_VIDEO_MAX_SIZE_BYTES"] = original_limit
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Profile video is too large", response.get_json()["error"])
+
     def test_profile_update_me_and_get_me(self):
         self._register("alice")
         headers = self._auth_header("alice")

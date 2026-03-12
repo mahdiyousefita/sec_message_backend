@@ -22,12 +22,8 @@ def push_message_payload(recipient, payload):
 
 def pop_messages(username):
     key = f"inbox:{username}"
-    messages = []
 
-    while True:
-        msg = redis_client.lpop(key)
-        if not msg:
-            break
-        messages.append(json.loads(msg))
+    messages = redis_client.lrange(key, 0, -1)
+    redis_client.delete(key)
 
-    return messages
+    return [json.loads(msg) for msg in messages]

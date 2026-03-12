@@ -163,6 +163,7 @@ GET /api/profiles/me
     "name": "Alice",
     "bio": "Hello there",
     "profile_image_url": "https://api.dinosocial.ir/media/profiles/1/uuid.jpeg",
+    "profile_video_url": "https://api.dinosocial.ir/media/profiles/1/uuid.mp4",
     "followers_count": 10,
     "following_count": 5,
     "posts_count": 12
@@ -171,7 +172,7 @@ GET /api/profiles/me
   401 JWT auth error (missing/invalid/expired token)
 
 PUT /api/profiles/me
-- Description: Update current user's profile fields and optionally upload profile image.
+- Description: Update current user's profile fields and optionally upload profile image and short profile video.
 - Auth: Yes
 - Content-Type:
   - application/json (for text fields)
@@ -185,12 +186,18 @@ PUT /api/profiles/me
   - name: optional string
   - bio: optional string
   - profile_image or avatar: optional file (image/jpeg, image/png, image/webp)
+  - profile_video or video: optional file (video/mp4, video/quicktime)
+- Profile media rules:
+  - `profile_video` max duration: 5 seconds (configurable by `PROFILE_VIDEO_MAX_DURATION_SECONDS`)
+  - `profile_video` max size: 15MB (configurable by `PROFILE_VIDEO_MAX_SIZE_BYTES`)
+  - On replacement, previous profile image/video object is deleted from MinIO.
 - Success: 200
   {
     "username": "alice",
     "name": "Alice Cooper",
     "bio": "Building DinoSocial",
     "profile_image_url": "https://api.dinosocial.ir/media/profiles/1/uuid.jpeg",
+    "profile_video_url": "https://api.dinosocial.ir/media/profiles/1/uuid.mp4",
     "followers_count": 10,
     "following_count": 5,
     "posts_count": 12
@@ -201,6 +208,11 @@ PUT /api/profiles/me
   400 {"error": "Name must be a non-empty string"}
   400 {"error": "Bio must be a string"}
   400 {"error": "Profile image file is required"}
+  400 {"error": "Profile video file is required"}
+  400 {"error": "Could not determine profile video duration"}
+  400 {"error": "Profile video must be 5 seconds or shorter"}
+  400 {"error": "Could not determine profile video size"}
+  400 {"error": "Profile video is too large. Maximum allowed size is 15.0MB."}
   400 {"error": "Unsupported media type: ..."}
   401 JWT auth error (missing/invalid/expired token)
 
@@ -213,6 +225,7 @@ GET /api/profiles/{username}
     "name": "Bob",
     "bio": "",
     "profile_image_url": null,
+    "profile_video_url": null,
     "followers_count": 3,
     "following_count": 7,
     "posts_count": 2
@@ -273,6 +286,62 @@ DELETE /api/follows/{username}
   404 {"error": "User not found"}
   400 {"error": "You cannot unfollow yourself"}
   401 JWT auth error (missing/invalid/expired token)
+
+GET /api/follows/{username}/status
+- Description: Check whether the authenticated user currently follows `{username}`.
+- Auth: Yes
+- Success: 200
+  {"is_following": true}
+  {"is_following": false}
+- Errors:
+  404 {"error": "User not found"}
+  401 JWT auth error (missing/invalid/expired token)
+
+GET /api/follows/{username}/followers
+- Description: List followers of a user (paginated).
+- Auth: No
+- Query Params:
+  page (int, default: 1, minimum effective value: 1)
+  limit (int, default: 20, max effective value: 100)
+- Success: 200
+  {
+    "page": 1,
+    "limit": 20,
+    "total": 2,
+    "users": [
+      {
+        "id": 7,
+        "username": "charlie",
+        "name": "Charlie",
+        "profile_image_url": null
+      }
+    ]
+  }
+- Errors:
+  404 {"error": "User not found"}
+
+GET /api/follows/{username}/following
+- Description: List accounts followed by a user (paginated).
+- Auth: No
+- Query Params:
+  page (int, default: 1, minimum effective value: 1)
+  limit (int, default: 20, max effective value: 100)
+- Success: 200
+  {
+    "page": 1,
+    "limit": 20,
+    "total": 2,
+    "users": [
+      {
+        "id": 3,
+        "username": "bob",
+        "name": "Bob",
+        "profile_image_url": "https://api.dinosocial.ir/media/profiles/3/uuid.jpeg"
+      }
+    ]
+  }
+- Errors:
+  404 {"error": "User not found"}
 
 
 6) Messages (HTTP)

@@ -45,6 +45,12 @@ class Config:
     )
     MEDIA_CACHE_IMMUTABLE = _env_bool("MEDIA_CACHE_IMMUTABLE", True)
     MEDIA_STREAM_CHUNK_SIZE = int(os.getenv("MEDIA_STREAM_CHUNK_SIZE", str(256 * 1024)))
+    PROFILE_VIDEO_MAX_DURATION_SECONDS = int(
+        os.getenv("PROFILE_VIDEO_MAX_DURATION_SECONDS", "5")
+    )
+    PROFILE_VIDEO_MAX_SIZE_BYTES = int(
+        os.getenv("PROFILE_VIDEO_MAX_SIZE_BYTES", str(15 * 1024 * 1024))
+    )
 
     # Credentialed CORS cannot use a wildcard origin.
     # Defaults include known dev ports + localhost any port.

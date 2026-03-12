@@ -2,6 +2,7 @@ from sqlalchemy.orm import aliased
 
 from app.db import db
 from app.models.follow_model import Follow
+from app.models.profile_model import Profile
 from app.models.user_model import User
 
 
@@ -61,3 +62,66 @@ def get_following_usernames(follower_id: int):
     )
     return [row[0] for row in rows]
 
+
+def get_followers_page(following_id: int, page: int, limit: int):
+    follower_user = aliased(User)
+
+    total = Follow.query.filter_by(following_id=following_id).count()
+    rows = (
+        db.session.query(
+            follower_user.id,
+            follower_user.username,
+            Profile.name,
+            Profile.image_object_name,
+        )
+        .join(Follow, Follow.follower_id == follower_user.id)
+        .outerjoin(Profile, Profile.user_id == follower_user.id)
+        .filter(Follow.following_id == following_id)
+        .order_by(follower_user.username.asc())
+        .offset((page - 1) * limit)
+        .limit(limit)
+        .all()
+    )
+
+    users = [
+        {
+            "id": row.id,
+            "username": row.username,
+            "name": row.name or row.username,
+            "image_object_name": row.image_object_name,
+        }
+        for row in rows
+    ]
+    return total, users
+
+
+def get_following_page(follower_id: int, page: int, limit: int):
+    following_user = aliased(User)
+
+    total = Follow.query.filter_by(follower_id=follower_id).count()
+    rows = (
+        db.session.query(
+            following_user.id,
+            following_user.username,
+            Profile.name,
+            Profile.image_object_name,
+        )
+        .join(Follow, Follow.following_id == following_user.id)
+        .outerjoin(Profile, Profile.user_id == following_user.id)
+        .filter(Follow.follower_id == follower_id)
+        .order_by(following_user.username.asc())
+        .offset((page - 1) * limit)
+        .limit(limit)
+        .all()
+    )
+
+    users = [
+        {
+            "id": row.id,
+            "username": row.username,
+            "name": row.name or row.username,
+            "image_object_name": row.image_object_name,
+        }
+        for row in rows
+    ]
+    return total, users

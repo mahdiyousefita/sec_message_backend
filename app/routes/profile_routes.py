@@ -26,12 +26,16 @@ def update_my_profile():
     name = None
     bio = None
     profile_image = None
+    profile_video = None
 
     if "multipart/form-data" in content_type:
         name = request.form.get("name")
         bio = request.form.get("bio")
         profile_image = request.files.get("profile_image") or request.files.get(
             "avatar"
+        )
+        profile_video = request.files.get("profile_video") or request.files.get(
+            "video"
         )
     else:
         data = request.get_json(silent=True)
@@ -46,6 +50,7 @@ def update_my_profile():
             name=name,
             bio=bio,
             profile_image=profile_image,
+            profile_video=profile_video,
         )
         return jsonify(profile), 200
     except ValueError as e:
@@ -70,4 +75,3 @@ def get_profile_posts(username):
         return jsonify(data), 200
     except ValueError as e:
         return jsonify({"error": str(e)}), 404
-
