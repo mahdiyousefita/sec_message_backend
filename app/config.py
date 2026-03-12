@@ -52,6 +52,10 @@ class Config:
         os.getenv("PROFILE_VIDEO_MAX_SIZE_BYTES", str(15 * 1024 * 1024))
     )
 
+    MESSAGE_ATTACHMENT_MAX_SIZE_BYTES = int(
+        os.getenv("MESSAGE_ATTACHMENT_MAX_SIZE_BYTES", str(25 * 1024 * 1024))
+    )
+
     # Credentialed CORS cannot use a wildcard origin.
     # Defaults include known dev ports + localhost any port.
     _default_cors_origins = [
@@ -79,3 +83,11 @@ class Config:
     SESSION_COOKIE_SECURE = True
     JWT_COOKIE_SAMESITE = "None"
     JWT_COOKIE_SECURE = True
+
+    # Socket.IO configuration
+    SOCKETIO_CORS_ALLOWED_ORIGINS = CORS_ALLOWED_ORIGINS
+    SOCKETIO_MESSAGE_QUEUE = os.getenv("SOCKETIO_MESSAGE_QUEUE", "").strip() or None
+    SOCKETIO_PING_TIMEOUT = int(os.getenv("SOCKETIO_PING_TIMEOUT", "25"))
+    SOCKETIO_PING_INTERVAL = int(os.getenv("SOCKETIO_PING_INTERVAL", "20"))
+    SOCKETIO_LOGGER = _env_bool("SOCKETIO_LOGGER", False)
+    SOCKETIO_ENGINEIO_LOGGER = _env_bool("SOCKETIO_ENGINEIO_LOGGER", False)

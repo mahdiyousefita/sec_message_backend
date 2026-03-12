@@ -31,6 +31,16 @@ class FakeRedis:
             return None
         return values.pop(0)
 
+    def lrange(self, key, start, end):
+        values = self._lists.get(key, [])
+        if end == -1:
+            end = len(values) - 1
+        return values[start:end + 1]
+
+    def delete(self, key):
+        self._lists.pop(key, None)
+        self._sets.pop(key, None)
+
 
 class TestSocketMessageFlow(unittest.TestCase):
     @classmethod
@@ -161,6 +171,63 @@ class TestSocketMessageFlow(unittest.TestCase):
         self.assertEqual(messages[0]["encrypted_key"], "key-2")
 
         self.assertEqual(self.message_service.receive_messages("bob"), [])
+
+
+    def test_attachment_message_delivered_with_type(self):
+        alice = self._connect(self.alice_token)
+        bob = self._connect(self.bob_token)
+
+        alice.get_received()
+        bob.get_received()
+
+        attachment = {
+            "type": "image",
+            "url": "https://cdn.example.com/messages/a.png",
+            "mime_type": "image/png",
+            "file_name": "a.png",
+        }
+        alice.emit(
+            "send_message",
+            {
+                "to": "bob",
+                "message": None,
+                "encrypted_key": "file-key-1",
+                "type": "image",
+                "attachment": attachment,
+            },
+        )
+
+        alice_events = alice.get_received()
+        bob_events = bob.get_received()
+
+        sent_events = [event for event in alice_events if event["name"] == "message_sent"]
+        self.assertEqual(len(sent_events), 1)
+        self.assertEqual(sent_events[0]["args"][0]["type"], "image")
+
+        new_message_events = [event for event in bob_events if event["name"] == "new_message"]
+        self.assertEqual(len(new_message_events), 1)
+        payload = new_message_events[0]["args"][0]
+        self.assertEqual(payload["type"], "image")
+        self.assertEqual(payload["attachment"]["url"], attachment["url"])
+
+    def test_user_status_events_and_query(self):
+        alice = self._connect(self.alice_token)
+        alice.get_received()
+
+        bob = self._connect(self.bob_token)
+        alice_events = alice.get_received()
+        status_events = [event for event in alice_events if event["name"] == "user_status"]
+        self.assertTrue(any(e["args"][0]["username"] == "bob" and e["args"][0]["online"] for e in status_events))
+
+        alice.emit("get_user_status", {"username": "bob"})
+        queried = alice.get_received()
+        query_events = [event for event in queried if event["name"] == "user_status"]
+        self.assertTrue(any(e["args"][0]["username"] == "bob" and e["args"][0]["online"] for e in query_events))
+
+        bob.disconnect()
+        post_disconnect_events = alice.get_received()
+        offline_events = [event for event in post_disconnect_events if event["name"] == "user_status"]
+        self.assertTrue(any(e["args"][0]["username"] == "bob" and not e["args"][0]["online"] for e in offline_events))
 
 
 if __name__ == "__main__":

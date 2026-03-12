@@ -32,12 +32,23 @@ def create_app():
     app.config["JWT_COOKIE_SAMESITE"] = "None"
     app.config["JWT_COOKIE_SECURE"] = True
 
-    # Temporary broad CORS for cross-origin debugging in production.
-    CORS(app, supports_credentials=True)
+    CORS(
+        app,
+        resources={r"/*": {"origins": Config.CORS_ALLOWED_ORIGINS}},
+        supports_credentials=True,
+    )
 
     db.init_app(app)
     ma.init_app(app)
-    socketio.init_app(app)
+    socketio.init_app(
+        app,
+        cors_allowed_origins=Config.SOCKETIO_CORS_ALLOWED_ORIGINS,
+        message_queue=Config.SOCKETIO_MESSAGE_QUEUE,
+        ping_timeout=Config.SOCKETIO_PING_TIMEOUT,
+        ping_interval=Config.SOCKETIO_PING_INTERVAL,
+        logger=Config.SOCKETIO_LOGGER,
+        engineio_logger=Config.SOCKETIO_ENGINEIO_LOGGER,
+    )
     jwt = JWTManager(app)
     register_socket_events()
 
