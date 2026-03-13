@@ -16,6 +16,23 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _resolve_cors_allowed_origins(default_origins):
+    cors_origins_raw = os.getenv("CORS_ALLOWED_ORIGINS", "").strip()
+    if not cors_origins_raw:
+        return default_origins
+
+    cors_origins = [
+        item.strip() for item in cors_origins_raw.split(",") if item.strip()
+    ]
+    env_cors_origins = [origin for origin in cors_origins if origin != "*"]
+
+    merged = list(env_cors_origins)
+    for origin in default_origins:
+        if origin not in merged:
+            merged.append(origin)
+    return merged
+
+
 class Config:
     SQLALCHEMY_DATABASE_URI = os.getenv("DATABASE_URL", "sqlite:///messenger.db")
     SQLALCHEMY_TRACK_MODIFICATIONS = False
@@ -52,6 +69,10 @@ class Config:
         os.getenv("PROFILE_VIDEO_MAX_SIZE_BYTES", str(15 * 1024 * 1024))
     )
 
+    MESSAGE_ATTACHMENT_MAX_SIZE_BYTES = int(
+        os.getenv("MESSAGE_ATTACHMENT_MAX_SIZE_BYTES", str(25 * 1024 * 1024))
+    )
+
     # Credentialed CORS cannot use a wildcard origin.
     # Defaults include known dev ports + localhost any port.
     _default_cors_origins = [
@@ -59,23 +80,18 @@ class Config:
         "http://localhost:5176",
         r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     ]
-    _cors_origins_raw = os.getenv("CORS_ALLOWED_ORIGINS", "").strip()
-    if _cors_origins_raw:
-        _cors_origins = [
-            item.strip() for item in _cors_origins_raw.split(",") if item.strip()
-        ]
-        _env_cors_origins = [
-            origin for origin in _cors_origins if origin != "*"
-        ]
-        CORS_ALLOWED_ORIGINS = _env_cors_origins + [
-            origin for origin in _default_cors_origins
-            if origin not in _env_cors_origins
-        ]
-    else:
-        CORS_ALLOWED_ORIGINS = _default_cors_origins
+    CORS_ALLOWED_ORIGINS = _resolve_cors_allowed_origins(_default_cors_origins)
 
     # Cross-site cookies for HTTPS requests from frontend.
     SESSION_COOKIE_SAMESITE = "None"
     SESSION_COOKIE_SECURE = True
     JWT_COOKIE_SAMESITE = "None"
     JWT_COOKIE_SECURE = True
+
+    # Socket.IO configuration
+    SOCKETIO_CORS_ALLOWED_ORIGINS = CORS_ALLOWED_ORIGINS
+    SOCKETIO_MESSAGE_QUEUE = os.getenv("SOCKETIO_MESSAGE_QUEUE", "").strip() or None
+    SOCKETIO_PING_TIMEOUT = int(os.getenv("SOCKETIO_PING_TIMEOUT", "25"))
+    SOCKETIO_PING_INTERVAL = int(os.getenv("SOCKETIO_PING_INTERVAL", "20"))
+    SOCKETIO_LOGGER = _env_bool("SOCKETIO_LOGGER", False)
+    SOCKETIO_ENGINEIO_LOGGER = _env_bool("SOCKETIO_ENGINEIO_LOGGER", False)
