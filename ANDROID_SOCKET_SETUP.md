@@ -167,3 +167,10 @@ fun getUserStatus(username: String) {
 - Body: `multipart/form-data` با فیلد `file`
 
 خروجی این endpoint یک آبجکت `attachment` می‌دهد؛ همان آبجکت را داخل `send_message` بفرستید.
+
+
+## 10) راهنمای کامل‌تر
+
+برای نسخه‌ی کامل‌تر با جزئیات پیاده‌سازی، edge-caseها و troubleshooting این فایل را ببینید:
+
+- `MESSAGING_ANDROID_DETAILED_GUIDE.md`
