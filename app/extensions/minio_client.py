@@ -16,6 +16,9 @@ def _build_signature():
         current_app.config["MINIO_ACCESS_KEY"],
         current_app.config["MINIO_SECRET_KEY"],
         current_app.config["MINIO_SECURE"],
+        current_app.config.get("MINIO_REGION"),
+        current_app.config.get("MINIO_USE_ACCELERATE_ENDPOINT", False),
+        current_app.config.get("MINIO_USE_VIRTUAL_STYLE", False),
         current_app.config["MINIO_CONNECT_TIMEOUT"],
         current_app.config["MINIO_READ_TIMEOUT"],
         current_app.config.get("MINIO_HTTP_POOL_MAXSIZE", 32),
@@ -45,6 +48,7 @@ def get_minio_client():
             access_key=current_app.config["MINIO_ACCESS_KEY"],
             secret_key=current_app.config["MINIO_SECRET_KEY"],
             secure=current_app.config["MINIO_SECURE"],
+            region=current_app.config.get("MINIO_REGION"),
             http_client=http_client,
         )
         _minio_signature = signature

@@ -1,4 +1,5 @@
 import os
+import re
 import uuid
 
 from flask import current_app, has_request_context, request
@@ -28,24 +29,31 @@ ALLOWED_AUDIO_MIME_TYPES = {
     "audio/mp4",
 }
 
-ALLOWED_FILE_MIME_TYPES = {
-    "application/pdf",
-    "text/plain",
-    "application/msword",
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    "application/vnd.ms-excel",
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    "application/vnd.ms-powerpoint",
-    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    "application/zip",
-    "application/x-rar-compressed",
-}
+ALL_ALLOWED_MIME_TYPES = (
+    ALLOWED_IMAGE_MIME_TYPES
+    | ALLOWED_VIDEO_MIME_TYPES
+    | ALLOWED_AUDIO_MIME_TYPES
+)
 
-ALLOWED_MESSAGE_TYPES = {"text", "image", "video", "voice", "file", "mixed"}
+ALLOWED_MESSAGE_TYPES = {"text", "image", "video", "voice", "mixed"}
+
+MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024       # 10 MB
+MAX_VIDEO_SIZE_BYTES = 50 * 1024 * 1024       # 50 MB
+MAX_AUDIO_SIZE_BYTES = 16 * 1024 * 1024       # 16 MB
+
+_SAFE_FILENAME_RE = re.compile(r"[^a-zA-Z0-9._-]")
 
 
 class MessageAttachmentStorageError(Exception):
     pass
+
+
+def _sanitize_filename(filename: str) -> str:
+    name = os.path.basename(filename or "file")
+    name = _SAFE_FILENAME_RE.sub("_", name)
+    if len(name) > 200:
+        name = name[:200]
+    return name or "file"
 
 
 def _build_media_url(object_name: str) -> str:
@@ -77,16 +85,6 @@ def _extension_for_mimetype(mimetype: str) -> str:
         "audio/ogg": "ogg",
         "audio/aac": "aac",
         "audio/mp4": "m4a",
-        "application/pdf": "pdf",
-        "text/plain": "txt",
-        "application/msword": "doc",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
-        "application/vnd.ms-excel": "xls",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
-        "application/vnd.ms-powerpoint": "ppt",
-        "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
-        "application/zip": "zip",
-        "application/x-rar-compressed": "rar",
     }
     return mapping.get(mimetype, mimetype.split("/")[-1] if "/" in mimetype else "bin")
 
@@ -129,9 +127,19 @@ def _attachment_type_from_mimetype(mimetype: str) -> str:
         return "video"
     if mimetype in ALLOWED_AUDIO_MIME_TYPES:
         return "voice"
-    if mimetype in ALLOWED_FILE_MIME_TYPES:
-        return "file"
     raise ValueError(f"Unsupported attachment type: {mimetype}")
+
+
+def _max_size_for_type(attachment_type: str) -> int:
+    return {
+        "image": MAX_IMAGE_SIZE_BYTES,
+        "video": MAX_VIDEO_SIZE_BYTES,
+        "voice": MAX_AUDIO_SIZE_BYTES,
+    }.get(attachment_type, MAX_IMAGE_SIZE_BYTES)
+
+
+def _format_mb(size_bytes: int) -> str:
+    return f"{size_bytes / (1024 * 1024):.0f}MB"
 
 
 def upload_message_attachment(username: str, file_storage):
@@ -145,12 +153,20 @@ def upload_message_attachment(username: str, file_storage):
     if not mimetype:
         raise ValueError("Attachment mime type is required")
 
+    if mimetype not in ALL_ALLOWED_MIME_TYPES:
+        raise ValueError(f"Unsupported attachment type: {mimetype}")
+
     attachment_type = _attachment_type_from_mimetype(mimetype)
     stream, size_bytes = _get_stream_and_length(file_storage)
 
-    max_size_bytes = int(current_app.config.get("MESSAGE_ATTACHMENT_MAX_SIZE_BYTES", 25 * 1024 * 1024))
-    if size_bytes > max_size_bytes:
-        raise ValueError("Attachment is too large")
+    max_size = _max_size_for_type(attachment_type)
+    if size_bytes > max_size:
+        raise ValueError(
+            f"{attachment_type.capitalize()} too large. "
+            f"Maximum allowed is {_format_mb(max_size)}."
+        )
+
+    safe_filename = _sanitize_filename(getattr(file_storage, "filename", "file"))
 
     extension = _extension_for_mimetype(mimetype)
     bucket = current_app.config["MINIO_BUCKET"]
@@ -195,14 +211,14 @@ def upload_message_attachment(username: str, file_storage):
     return {
         "type": attachment_type,
         "mime_type": mimetype,
-        "file_name": getattr(file_storage, "filename", ""),
+        "file_name": safe_filename,
         "size_bytes": max(size_bytes, 0),
         "object_name": object_name,
         "url": _build_media_url(object_name),
     }
 
 
-def send_message(sender, recipient, message, encrypted_key, persist=True, attachment=None, message_type=None):
+def send_message(sender, recipient, message, encrypted_key, attachment=None, message_type=None):
     if not user_repository.get_by_username(recipient):
         raise ValueError("Recipient not found")
 
@@ -220,7 +236,7 @@ def send_message(sender, recipient, message, encrypted_key, persist=True, attach
     elif attachment and message:
         normalized_message_type = "mixed"
     elif attachment:
-        normalized_message_type = attachment.get("type", "file")
+        normalized_message_type = attachment.get("type", "image")
     else:
         normalized_message_type = "text"
 
@@ -231,11 +247,18 @@ def send_message(sender, recipient, message, encrypted_key, persist=True, attach
         attachment=attachment,
         message_type=normalized_message_type,
     )
-    if persist:
-        message_repository.push_message_payload(recipient, payload)
+    message_repository.push_message_payload(recipient, payload)
 
     return payload
 
 
 def receive_messages(username):
     return message_repository.pop_messages(username)
+
+
+def peek_messages(username):
+    return message_repository.peek_messages(username)
+
+
+def ack_messages(username, message_ids):
+    return message_repository.ack_messages(username, message_ids)

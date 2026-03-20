@@ -1,9 +1,12 @@
 from flask import request, session
+import logging
 from flask_jwt_extended import decode_token
 from flask_socketio import emit, join_room
 
 from app.extensions.extensions import socketio
 from app.services import message_service
+
+logger = logging.getLogger(__name__)
 
 _registered = False
 _online_users = {}
@@ -62,8 +65,15 @@ def register_socket_events():
         join_room(username)
         _set_user_online(username)
 
-        pending = message_service.receive_messages(username)
+        pending = message_service.peek_messages(username)
         if pending:
+            logger.info(
+                "Emitting pending_messages to %s: count=%d, types=%s, sample=%s",
+                username,
+                len(pending),
+                [type(m).__name__ for m in pending[:3]],
+                str(pending[0])[:300] if pending else "n/a",
+            )
             emit("pending_messages", {"messages": pending})
 
         emit("connected", {"username": username})
@@ -113,15 +123,12 @@ def register_socket_events():
             emit("message_error", {"error": "Invalid attachment payload"})
             return
 
-        should_persist = not is_user_online(recipient)
-
         try:
             payload = message_service.send_message(
                 sender,
                 recipient,
                 encrypted_message,
                 encrypted_key,
-                persist=should_persist,
                 attachment=attachment,
                 message_type=message_type,
             )
@@ -130,9 +137,51 @@ def register_socket_events():
             return
 
         socketio.emit("new_message", payload, room=recipient)
+        logger.debug(
+            "Emitting new_message to %s: type=%s, sample=%s",
+            recipient,
+            type(payload).__name__,
+            str(payload)[:300],
+        )
+
         emit(
             "message_sent",
-            {"to": recipient, "timestamp": payload["timestamp"], "type": payload["type"]}
+            {
+                "to": recipient,
+                "message_id": payload["message_id"],
+                "timestamp": payload["timestamp"],
+                "type": payload["type"],
+            },
         )
+
+    @socketio.on("ack_messages")
+    def handle_ack_messages(data):
+        username = session.get("username")
+        if not username:
+            emit("message_error", {"error": "Unauthorized"})
+            return
+
+        if not isinstance(data, dict):
+            emit("message_error", {"error": "Invalid payload"})
+            return
+
+        message_ids = data.get("message_ids")
+        if not isinstance(message_ids, list) or not message_ids:
+            emit("message_error", {"error": "message_ids must be a non-empty list"})
+            return
+
+        removed = message_service.ack_messages(username, message_ids)
+        emit("ack_confirmed", {"removed": removed})
+
+    @socketio.on("get_contacts_status")
+    def handle_get_contacts_status():
+        username = session.get("username")
+        if not username:
+            emit("message_error", {"error": "Unauthorized"})
+            return
+
+        from app.services import contact_service
+        contacts = contact_service.get_contacts_with_message_status(username)
+        emit("contacts_status", {"contacts": contacts})
 
     _registered = True

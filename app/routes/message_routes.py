@@ -33,6 +33,9 @@ def upload_attachment():
 @jwt_required()
 def inbox():
     username = get_jwt_identity()
-    return jsonify({
-        "messages": message_service.receive_messages(username)
-    })
+    consume = request.args.get("consume", "").strip().lower()
+    if consume in ("1", "true", "yes"):
+        messages = message_service.receive_messages(username)
+    else:
+        messages = message_service.peek_messages(username)
+    return jsonify({"messages": messages})

@@ -119,11 +119,15 @@ def _build_media_headers(*, content_type: str, content_length, etag: str | None,
 def get_media(object_name: str):
     bucket = current_app.config["MINIO_BUCKET"]
     minio = get_minio_client()
+    normalized_object_name = object_name.lstrip("/")
+
+    if normalized_object_name.startswith("static/"):
+        return current_app.send_static_file(normalized_object_name[len("static/"):])
 
     try:
         stat = minio.stat_object(
             bucket_name=bucket,
-            object_name=object_name,
+            object_name=normalized_object_name,
         )
     except S3Error as e:
         return _media_error_response(e)
@@ -151,7 +155,7 @@ def get_media(object_name: str):
     try:
         minio_response = minio.get_object(
             bucket_name=bucket,
-            object_name=object_name,
+            object_name=normalized_object_name,
         )
     except S3Error as e:
         if _is_media_not_found(e):

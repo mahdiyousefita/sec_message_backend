@@ -52,6 +52,9 @@ class Config:
         "MINIO_PUBLIC_BASE_URL",
         "http://127.0.0.1:9000"
     )
+    MINIO_REGION = os.getenv("MINIO_REGION", "").strip() or None
+    MINIO_USE_ACCELERATE_ENDPOINT = _env_bool("MINIO_USE_ACCELERATE_ENDPOINT", False)
+    MINIO_USE_VIRTUAL_STYLE = _env_bool("MINIO_USE_VIRTUAL_STYLE", False)
     APP_PUBLIC_BASE_URL = os.getenv("APP_PUBLIC_BASE_URL", "").strip()
     MEDIA_LOCAL_FALLBACK_ENABLED = _env_bool(
         "MEDIA_LOCAL_FALLBACK_ENABLED",

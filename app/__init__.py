@@ -17,7 +17,9 @@ from app.routes.auth_routes import auth_bp
 from app.routes.contact_routes import contact_bp
 from app.routes.message_routes import message_bp
 from app.routes.profile_routes import profile_bp
+from app.routes.notification_routes import notification_bp
 from app.routes.follow_routes import follow_bp
+from app.routes.search_routes import search_bp
 
 
 def create_app():
@@ -26,6 +28,8 @@ def create_app():
                 static_folder='static')
 
     app.config.from_object(Config)
+
+    app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50 MB hard cap
 
     app.config["SESSION_COOKIE_SAMESITE"] = "None"
     app.config["SESSION_COOKIE_SECURE"] = True
@@ -59,8 +63,10 @@ def create_app():
     app.register_blueprint(post_bp, url_prefix="/api")
     app.register_blueprint(comment_bp, url_prefix="/api")
     app.register_blueprint(vote_bp, url_prefix="/api")
+    app.register_blueprint(notification_bp, url_prefix="/api/notifications")
     app.register_blueprint(profile_bp, url_prefix="/api")
     app.register_blueprint(follow_bp, url_prefix="/api")
+    app.register_blueprint(search_bp, url_prefix="/api")
 
     with app.app_context():
         db.create_all()

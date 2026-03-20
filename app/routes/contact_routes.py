@@ -26,9 +26,17 @@ def add_contact():
 @jwt_required()
 def get_contacts():
     username = get_jwt_identity()
-    return jsonify({
-        "contacts": contact_service.get_contacts(username)
-    })
+    detailed = request.args.get("detailed", "").strip().lower()
+    if detailed in ("1", "true", "yes"):
+        return jsonify({
+            "contacts": contact_service.get_contacts_with_message_status(
+                username
+            )
+        })
+    else:
+        return jsonify({
+            "contacts": contact_service.get_contacts(username)
+        })
 
 @contact_bp.route("/<username>/public-key", methods=["GET"])
 @jwt_required()

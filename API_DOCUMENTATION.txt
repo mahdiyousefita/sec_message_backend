@@ -4,7 +4,7 @@ Sec Messenger Backend - API Documentation
 Base URL
 --------
 - Local API: http://127.0.0.1:5000
-- Production API: https://api.dinosocial.ir
+- Production API: https://back.dinosocial.ir
 - Frontend/Web: https://dinosocial.ir (not API origin)
 - Production media URLs are generated from `APP_PUBLIC_BASE_URL`.
 
@@ -17,7 +17,7 @@ Authentication
 
 Live Test Account (created February 25, 2026)
 ---------------------------------------------
-- Base URL: https://api.dinosocial.ir
+- Base URL: https://back.dinosocial.ir
 - Username: codex_verify_20260225191422
 - Password: CodexPost!2026
 - Refresh token:
@@ -162,8 +162,8 @@ GET /api/profiles/me
     "username": "alice",
     "name": "Alice",
     "bio": "Hello there",
-    "profile_image_url": "https://api.dinosocial.ir/media/profiles/1/uuid.jpeg",
-    "profile_video_url": "https://api.dinosocial.ir/media/profiles/1/uuid.mp4",
+    "profile_image_url": "https://back.dinosocial.ir/media/profiles/1/uuid.jpeg",
+    "profile_video_url": "https://back.dinosocial.ir/media/profiles/1/uuid.mp4",
     "followers_count": 10,
     "following_count": 5,
     "posts_count": 12
@@ -196,8 +196,8 @@ PUT /api/profiles/me
     "username": "alice",
     "name": "Alice Cooper",
     "bio": "Building DinoSocial",
-    "profile_image_url": "https://api.dinosocial.ir/media/profiles/1/uuid.jpeg",
-    "profile_video_url": "https://api.dinosocial.ir/media/profiles/1/uuid.mp4",
+    "profile_image_url": "https://back.dinosocial.ir/media/profiles/1/uuid.jpeg",
+    "profile_video_url": "https://back.dinosocial.ir/media/profiles/1/uuid.mp4",
     "followers_count": 10,
     "following_count": 5,
     "posts_count": 12
@@ -336,7 +336,7 @@ GET /api/follows/{username}/following
         "id": 3,
         "username": "bob",
         "name": "Bob",
-        "profile_image_url": "https://api.dinosocial.ir/media/profiles/3/uuid.jpeg"
+        "profile_image_url": "https://back.dinosocial.ir/media/profiles/3/uuid.jpeg"
       }
     ]
   }
@@ -453,13 +453,13 @@ GET /api/posts
           "id": 1,
           "username": "alice",
           "name": "Alice",
-          "profile_image_url": "https://api.dinosocial.ir/media/profiles/1/uuid.jpeg"
+          "profile_image_url": "https://back.dinosocial.ir/media/profiles/1/uuid.jpeg"
         },
         "created_at": "2026-02-12T10:00:00.000000",
         "media": [
           {
             "id": 1,
-            "url": "https://api.dinosocial.ir/media/posts/1/uuid.jpeg",
+            "url": "https://back.dinosocial.ir/media/posts/1/uuid.jpeg",
             "mime_type": "image/jpeg"
           }
         ]
@@ -514,7 +514,7 @@ GET /api/posts/{post_id}/comments
         "id": 1,
         "username": "alice",
         "name": "Alice",
-        "profile_image_url": "https://api.dinosocial.ir/media/profiles/1/uuid.jpeg"
+        "profile_image_url": "https://back.dinosocial.ir/media/profiles/1/uuid.jpeg"
       },
       "text": "Root comment",
       "score": 3,
