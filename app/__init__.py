@@ -20,6 +20,7 @@ from app.routes.profile_routes import profile_bp
 from app.routes.notification_routes import notification_bp
 from app.routes.follow_routes import follow_bp
 from app.routes.search_routes import search_bp
+from app.routes.admin_routes import admin_bp
 
 
 def create_app():
@@ -67,6 +68,7 @@ def create_app():
     app.register_blueprint(profile_bp, url_prefix="/api")
     app.register_blueprint(follow_bp, url_prefix="/api")
     app.register_blueprint(search_bp, url_prefix="/api")
+    app.register_blueprint(admin_bp, url_prefix="/admin")
 
     with app.app_context():
         db.create_all()

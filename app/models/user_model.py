@@ -12,4 +12,3 @@ class User(db.Model):
             'username': self.username,
             'public_key': self.public_key
         }
-

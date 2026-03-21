@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Admin Login</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0f172a;color:#e2e8f0;display:flex;justify-content:center;align-items:center;min-height:100vh}
+.card{background:#1e293b;border-radius:12px;padding:2.5rem;width:360px;box-shadow:0 8px 32px rgba(0,0,0,.4)}
+h1{text-align:center;margin-bottom:1.5rem;font-size:1.5rem;color:#38bdf8}
+label{display:block;margin-bottom:.35rem;font-size:.85rem;color:#94a3b8}
+input{width:100%;padding:.7rem .9rem;border:1px solid #334155;border-radius:8px;background:#0f172a;color:#e2e8f0;font-size:.95rem;margin-bottom:1rem;outline:none;transition:border .2s}
+input:focus{border-color:#38bdf8}
+button{width:100%;padding:.75rem;background:#2563eb;color:#fff;border:none;border-radius:8px;font-size:1rem;cursor:pointer;transition:background .2s}
+button:hover{background:#1d4ed8}
+.error{color:#f87171;text-align:center;margin-bottom:1rem;font-size:.85rem;min-height:1.2em}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>🔒 Admin Login</h1>
+  <div id="error" class="error"></div>
+  <form id="loginForm">
+    <label for="username">Username</label>
+    <input id="username" type="text" autocomplete="username" required autofocus>
+    <label for="password">Password</label>
+    <input id="password" type="password" autocomplete="current-password" required>
+    <button type="submit">Sign In</button>
+  </form>
+</div>
+<script>
+document.getElementById('loginForm').addEventListener('submit', async function(e){
+  e.preventDefault();
+  const errEl = document.getElementById('error');
+  errEl.textContent = '';
+  const username = document.getElementById('username').value.trim();
+  const password = document.getElementById('password').value;
+  if(!username || !password){ errEl.textContent = 'Please fill in all fields'; return; }
+  try {
+    const res = await fetch('/admin/api/login', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({username, password})
+    });
+    const data = await res.json();
+    if(!res.ok){ errEl.textContent = data.error || 'Login failed'; return; }
+    localStorage.setItem('admin_token', data.access_token);
+    localStorage.setItem('admin_user', data.username);
+    window.location.href = '/admin/panel';
+  } catch(err){
+    errEl.textContent = 'Network error';
+  }
+});
+</script>
+</body>
+</html>

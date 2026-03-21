@@ -1,4 +1,5 @@
 from datetime import timezone
+import os
 
 from flask import (
     Blueprint,
@@ -7,6 +8,7 @@ from flask import (
     render_template,
     stream_with_context,
     current_app,
+    send_from_directory,
     request,
 )
 from minio.error import S3Error
@@ -20,6 +22,18 @@ main_bp = Blueprint("main", __name__)
 @main_bp.route("", methods=["GET"])
 def main():
     return render_template('index.html')
+
+
+@main_bp.route("/download/app", methods=["GET"])
+def download_apk():
+    release_dir = os.path.join(current_app.root_path, "..", "release")
+    release_dir = os.path.abspath(release_dir)
+    filename = "app-release.apk"
+    if not os.path.isfile(os.path.join(release_dir, filename)):
+        return jsonify({"error": "APK not found"}), 404
+    return send_from_directory(
+        release_dir, filename, as_attachment=True, download_name=filename
+    )
 
 
 def _is_media_not_found(error: S3Error) -> bool:
