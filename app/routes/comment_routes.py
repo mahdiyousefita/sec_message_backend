@@ -3,6 +3,7 @@ from flask_jwt_extended import jwt_required, get_jwt_identity
 
 from app.services import comment_service
 from app.services.comment_service import add_comment
+from app.services import activity_notification_service
 from app.models.user_model import User
 
 
@@ -27,6 +28,12 @@ def create_comment(post_id):
             text=text,
             parent_id=parent_id
         )
+
+        try:
+            activity_notification_service.notify_comment(username, post_id, text)
+        except Exception:
+            pass
+
         return jsonify({
             "id": comment.id,
             "message": "Comment created"

@@ -2,6 +2,7 @@ from flask import Blueprint, jsonify, request
 from flask_jwt_extended import get_jwt_identity, jwt_required
 
 from app.services import follow_service
+from app.services import activity_notification_service
 
 
 follow_bp = Blueprint("follows", __name__)
@@ -20,6 +21,12 @@ def follow_user(username):
             return jsonify({"error": error}), 404
         return jsonify({"error": error}), 400
 
+    if created:
+        try:
+            activity_notification_service.notify_follow(requester, username)
+        except Exception:
+            pass
+
     return jsonify(
         {"message": "Followed"} if created else {"message": "Already following"}
     ), 200
@@ -37,6 +44,12 @@ def unfollow_user(username):
         if error == "User not found":
             return jsonify({"error": error}), 404
         return jsonify({"error": error}), 400
+
+    if removed:
+        try:
+            activity_notification_service.notify_unfollow(requester, username)
+        except Exception:
+            pass
 
     return jsonify(
         {"message": "Unfollowed"} if removed else {"message": "Not following"}

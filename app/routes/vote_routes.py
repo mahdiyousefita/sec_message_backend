@@ -2,6 +2,7 @@ from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 
 from app.services.vote_service import vote
+from app.services import activity_notification_service
 
 vote_bp = Blueprint("votes", __name__)
 
@@ -22,6 +23,12 @@ def vote_route():
             target_id=target_id,
             value=value
         )
+
+        try:
+            activity_notification_service.notify_vote(username, target_type, target_id, value)
+        except Exception:
+            pass
+
         return jsonify({"message": "Vote recorded"}), 200
 
     except ValueError as e:

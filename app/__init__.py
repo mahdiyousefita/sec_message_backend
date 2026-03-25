@@ -18,9 +18,12 @@ from app.routes.contact_routes import contact_bp
 from app.routes.message_routes import message_bp
 from app.routes.profile_routes import profile_bp
 from app.routes.notification_routes import notification_bp
+from app.routes.activity_notification_routes import activity_notification_bp
 from app.routes.follow_routes import follow_bp
 from app.routes.search_routes import search_bp
 from app.routes.admin_routes import admin_bp
+
+import app.models.activity_notification_model  # noqa: F401 – register model with SQLAlchemy
 
 
 def create_app():
@@ -65,6 +68,7 @@ def create_app():
     app.register_blueprint(comment_bp, url_prefix="/api")
     app.register_blueprint(vote_bp, url_prefix="/api")
     app.register_blueprint(notification_bp, url_prefix="/api/notifications")
+    app.register_blueprint(activity_notification_bp, url_prefix="/api/activity-notifications")
     app.register_blueprint(profile_bp, url_prefix="/api")
     app.register_blueprint(follow_bp, url_prefix="/api")
     app.register_blueprint(search_bp, url_prefix="/api")

@@ -1,5 +1,6 @@
 from flask import request, session
 import logging
+from datetime import datetime, timezone
 from flask_jwt_extended import decode_token
 from flask_socketio import emit, join_room
 
@@ -118,6 +119,10 @@ def register_socket_events():
         encrypted_key = data.get("encrypted_key")
         attachment = data.get("attachment")
         message_type = data.get("type")
+        reply_to_message_id = data.get("reply_to_message_id")
+        reply_to_sender = data.get("reply_to_sender")
+        encrypted_reply_preview = data.get("encrypted_reply_preview")
+        encrypted_reply_key = data.get("encrypted_reply_key")
 
         if attachment is not None and not isinstance(attachment, dict):
             emit("message_error", {"error": "Invalid attachment payload"})
@@ -131,6 +136,10 @@ def register_socket_events():
                 encrypted_key,
                 attachment=attachment,
                 message_type=message_type,
+                reply_to_message_id=reply_to_message_id,
+                reply_to_sender=reply_to_sender,
+                encrypted_reply_preview=encrypted_reply_preview,
+                encrypted_reply_key=encrypted_reply_key,
             )
         except ValueError as exc:
             emit("message_error", {"error": str(exc)})
@@ -143,6 +152,28 @@ def register_socket_events():
             type(payload).__name__,
             str(payload)[:300],
         )
+
+        socketio.emit("new_notification", {
+            "from": sender,
+            "type": payload.get("type", "text"),
+            "timestamp": payload.get("timestamp", datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")),
+            "message_id": payload.get("message_id", ""),
+        }, room=recipient)
+        logger.debug(
+            "Emitting new_notification to %s: type=%s, sample=%s",
+            recipient,
+            type(payload).__name__,
+            str(payload)[:300],
+        )
+
+        contacts_update = {
+            "from": sender,
+            "to": recipient,
+            "timestamp": payload["timestamp"],
+            "type": payload["type"],
+        }
+        socketio.emit("contacts_updated", contacts_update, room=recipient)
+        emit("contacts_updated", contacts_update)
 
         emit(
             "message_sent",
@@ -174,14 +205,28 @@ def register_socket_events():
         emit("ack_confirmed", {"removed": removed})
 
     @socketio.on("get_contacts_status")
-    def handle_get_contacts_status():
+    def handle_get_contacts_status(data=None):
         username = session.get("username")
         if not username:
             emit("message_error", {"error": "Unauthorized"})
             return
 
+        page = 1
+        limit = 20
+        if isinstance(data, dict):
+            try:
+                page = int(data.get("page", 1))
+            except (TypeError, ValueError):
+                page = 1
+            try:
+                limit = int(data.get("limit", 20))
+            except (TypeError, ValueError):
+                limit = 20
+
         from app.services import contact_service
-        contacts = contact_service.get_contacts_with_message_status(username)
-        emit("contacts_status", {"contacts": contacts})
+        result = contact_service.get_contacts_with_message_status(
+            username, page=page, limit=limit
+        )
+        emit("contacts_status", result)
 
     _registered = True

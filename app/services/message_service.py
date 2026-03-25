@@ -218,7 +218,10 @@ def upload_message_attachment(username: str, file_storage):
     }
 
 
-def send_message(sender, recipient, message, encrypted_key, attachment=None, message_type=None):
+def send_message(sender, recipient, message, encrypted_key, attachment=None, message_type=None,
+                reply_to_message_id=None, reply_to_sender=None,
+                 encrypted_reply_preview=None,
+                 encrypted_reply_key=None):
     if not user_repository.get_by_username(recipient):
         raise ValueError("Recipient not found")
 
@@ -246,8 +249,15 @@ def send_message(sender, recipient, message, encrypted_key, attachment=None, mes
         encrypted_key,
         attachment=attachment,
         message_type=normalized_message_type,
+        reply_to_message_id=reply_to_message_id,
+        reply_to_sender=reply_to_sender,
+        encrypted_reply_preview=encrypted_reply_preview,
+        encrypted_reply_key=encrypted_reply_key,
     )
     message_repository.push_message_payload(recipient, payload)
+    message_repository.record_conversation_timestamp(
+        sender, recipient, payload.get("timestamp")
+    )
 
     return payload
 

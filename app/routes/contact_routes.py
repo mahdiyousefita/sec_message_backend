@@ -28,11 +28,19 @@ def get_contacts():
     username = get_jwt_identity()
     detailed = request.args.get("detailed", "").strip().lower()
     if detailed in ("1", "true", "yes"):
-        return jsonify({
-            "contacts": contact_service.get_contacts_with_message_status(
-                username
-            )
-        })
+        try:
+            page = int(request.args.get("page", 1))
+        except (TypeError, ValueError):
+            page = 1
+        try:
+            limit = int(request.args.get("limit", 20))
+        except (TypeError, ValueError):
+            limit = 20
+
+        result = contact_service.get_contacts_with_message_status(
+            username, page=page, limit=limit
+        )
+        return jsonify(result)
     else:
         return jsonify({
             "contacts": contact_service.get_contacts(username)
