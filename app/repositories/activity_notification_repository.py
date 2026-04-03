@@ -16,12 +16,14 @@ def create_notification(recipient_id, actor_id, kind, target_type=None, target_i
     return notif
 
 
-def get_notifications_page(recipient_id, page, limit):
+def get_notifications_page(recipient_id, page, limit, unread_only=False):
     query = (
         ActivityNotification.query
         .filter_by(recipient_id=recipient_id)
-        .order_by(ActivityNotification.created_at.desc())
     )
+    if unread_only:
+        query = query.filter_by(is_read=False)
+    query = query.order_by(ActivityNotification.created_at.desc())
     total = query.count()
     items = query.offset((page - 1) * limit).limit(limit).all()
     return total, items

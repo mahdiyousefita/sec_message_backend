@@ -12,9 +12,10 @@ def list_activity_notifications():
     username = get_jwt_identity()
     page = request.args.get("page", default=1, type=int)
     limit = request.args.get("limit", default=20, type=int)
+    unread_only = request.args.get("unread_only", default="false").lower() in ("true", "1", "yes")
 
     try:
-        data = activity_notification_service.get_activity_notifications(username, page, limit)
+        data = activity_notification_service.get_activity_notifications(username, page, limit, unread_only=unread_only)
     except ValueError as e:
         return jsonify({"error": str(e)}), 404
 

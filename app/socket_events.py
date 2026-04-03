@@ -4,8 +4,9 @@ from datetime import datetime, timezone
 from flask_jwt_extended import decode_token
 from flask_socketio import emit, join_room
 
-from app.extensions.extensions import socketio
+from app.extensions.extensions import socketio 
 from app.services import message_service
+from app.services import activity_notification_service
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +77,47 @@ def register_socket_events():
                 str(pending[0])[:300] if pending else "n/a",
             )
             emit("pending_messages", {"messages": pending})
+
+        try:
+            from app.repositories import user_repository, group_repository
+            from app.repositories import message_repository
+
+            user = user_repository.get_by_username(username)
+            if user:
+                user_groups = group_repository.get_groups_for_user(user.id)
+                for group in user_groups:
+                    group_id = group.id
+                    pending_group = message_repository.peek_group_messages_for_user(
+                        username, group_id
+                    )
+                    if pending_group:
+                        logger.info(
+                            "Emitting pending_group_messages to %s for group %s: count=%d",
+                            username, group_id, len(pending_group),
+                        )
+                        emit("pending_group_messages", {
+                            "group_id": group_id,
+                            "messages": pending_group,
+                        })
+        except Exception as exc:
+            logger.warning("Failed to emit pending group messages for %s: %s", username, exc)
+
+        try:
+            unread_count = activity_notification_service.get_unread_count(username)
+            if unread_count > 0:
+                data = activity_notification_service.get_activity_notifications(
+                    username, page=1, limit=10, unread_only=True
+                )
+                emit("pending_activity_notifications", {
+                    "unread_count": unread_count,
+                    "notifications": data.get("notifications", []),
+                })
+                logger.info(
+                    "Emitting pending_activity_notifications to %s: count=%d",
+                    username, unread_count,
+                )
+        except Exception as exc:
+            logger.warning("Failed to emit pending activity notifications for %s: %s", username, exc)
 
         emit("connected", {"username": username})
         socketio.emit(
@@ -204,6 +246,141 @@ def register_socket_events():
         removed = message_service.ack_messages(username, message_ids)
         emit("ack_confirmed", {"removed": removed})
 
+    @socketio.on("join_group")
+    def handle_join_group(data):
+        username = session.get("username")
+        if not username:
+            emit("message_error", {"error": "Unauthorized"})
+            return
+
+        if not isinstance(data, dict) or not data.get("group_id"):
+            emit("message_error", {"error": "group_id is required"})
+            return
+
+        group_id = data.get("group_id")
+
+        try:
+            from app.repositories import user_repository, group_repository
+            user = user_repository.get_by_username(username)
+            if not user or not group_repository.is_member(group_id, user.id):
+                emit("message_error", {"error": "You are not a member of this group"})
+                return
+        except Exception as exc:
+            logger.warning("join_group membership check failed for %s: %s", username, exc)
+            emit("message_error", {"error": "Failed to verify group membership"})
+            return
+
+        room_name = f"group_{group_id}"
+        join_room(room_name)
+        emit("group_joined", {"group_id": group_id})
+        logger.debug("User %s joined group room %s", username, room_name)
+
+    @socketio.on("send_group_message")
+    def handle_send_group_message(data):
+        sender = session.get("username")
+        if not sender:
+            emit("message_error", {"error": "Unauthorized"})
+            return
+
+        if not isinstance(data, dict):
+            emit("message_error", {"error": "Invalid payload"})
+            return
+
+        group_id = data.get("group_id")
+        message_text = data.get("message")
+        attachment = data.get("attachment")
+        message_type = data.get("type")
+        reply_to_message_id = data.get("reply_to_message_id")
+        reply_to_sender = data.get("reply_to_sender")
+        encrypted_reply_preview = data.get("encrypted_reply_preview")
+        encrypted_keys = data.get("encrypted_keys")
+
+        if not group_id:
+            emit("message_error", {"error": "group_id is required"})
+            return
+
+        if not message_text and not attachment:
+            emit("message_error", {"error": "Message or attachment is required"})
+            return
+
+        if not encrypted_keys or not isinstance(encrypted_keys, dict):
+            emit("message_error", {"error": "encrypted_keys is required"})
+            return
+
+        if attachment is not None and not isinstance(attachment, dict):
+            emit("message_error", {"error": "Invalid attachment payload"})
+            return
+
+        try:
+            from app.repositories import user_repository, group_repository
+            from app.repositories import message_repository
+
+            user = user_repository.get_by_username(sender)
+            if not user or not group_repository.is_member(group_id, user.id):
+                emit("message_error", {"error": "You are not a member of this group"})
+                return
+
+            normalized_type = message_type
+            if normalized_type:
+                normalized_type = normalized_type.strip().lower()
+                if normalized_type not in message_service.ALLOWED_MESSAGE_TYPES:
+                    emit("message_error", {"error": "Invalid message type"})
+                    return
+            elif attachment and message_text:
+                normalized_type = "mixed"
+            elif attachment:
+                normalized_type = attachment.get("type", "image")
+            else:
+                normalized_type = "text"
+
+            payload = message_repository.build_group_message_payload(
+                sender=sender,
+                group_id=group_id,
+                encrypted_message=message_text,
+                attachment=attachment,
+                message_type=normalized_type,
+                reply_to_message_id=reply_to_message_id,
+                reply_to_sender=reply_to_sender,
+                encrypted_reply_preview=encrypted_reply_preview,
+                encrypted_keys=encrypted_keys,
+            )
+
+            message_repository.record_group_conversation_timestamp(
+                group_id, payload.get("timestamp")
+            )
+
+            room_name = f"group_{group_id}"
+            socketio.emit("new_group_message", payload, room=room_name)
+            logger.debug(
+                "Emitting new_group_message to room %s from %s",
+                room_name, sender,
+            )
+
+            member_usernames = group_repository.get_group_member_usernames(group_id)
+            for member_username in member_usernames:
+                if member_username != sender:
+                    socketio.emit("new_notification", {
+                        "from": sender,
+                        "group_id": group_id,
+                        "type": payload.get("type", "text"),
+                        "timestamp": payload.get("timestamp", ""),
+                        "message_id": payload.get("message_id", ""),
+                    }, room=member_username)
+                    message_repository.push_group_message_to_member(
+                        group_id, member_username, payload
+                    )
+
+            emit("group_message_sent", {
+                "group_id": group_id,
+                "message_id": payload["message_id"],
+                "timestamp": payload["timestamp"],
+                "type": payload["type"],
+            })
+
+        except Exception as exc:
+            logger.error("send_group_message error: %s", exc, exc_info=True)
+            emit("message_error", {"error": "Failed to send group message"})
+
     @socketio.on("get_contacts_status")
     def handle_get_contacts_status(data=None):
         username = session.get("username")
@@ -228,5 +405,29 @@ def register_socket_events():
             username, page=page, limit=limit
         )
         emit("contacts_status", result)
+
+    @socketio.on("ack_group_messages")
+    def handle_ack_group_messages(data):
+        username = session.get("username")
+        if not username:
+            emit("message_error", {"error": "Unauthorized"})
+            return
+
+        if not isinstance(data, dict):
+            emit("message_error", {"error": "Invalid payload"})
+            return
+
+        group_id = data.get("group_id")
+        message_ids = data.get("message_ids")
+        if not group_id:
+            emit("message_error", {"error": "group_id is required"})
+            return
+        if not isinstance(message_ids, list) or not message_ids:
+            emit("message_error", {"error": "message_ids must be a non-empty list"})
+            return
+
+        from app.repositories import message_repository
+        removed = message_repository.ack_group_messages(username, group_id, message_ids)
+        emit("ack_group_confirmed", {"group_id": group_id, "removed": removed})
 
     _registered = True

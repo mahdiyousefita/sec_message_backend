@@ -80,7 +80,7 @@ def _build_author_maps(author_ids):
     )
 
 
-def get_activity_notifications(username, page, limit):
+def get_activity_notifications(username, page, limit, unread_only=False):
     user = user_repository.get_by_username(username)
     if not user:
         raise ValueError("User not found")
@@ -88,7 +88,7 @@ def get_activity_notifications(username, page, limit):
     page = max(1, page)
     limit = min(max(1, limit), MAX_LIMIT)
 
-    total, items = get_notifications_page(user.id, page, limit)
+    total, items = get_notifications_page(user.id, page, limit, unread_only=unread_only)
     actor_ids = {n.actor_id for n in items}
     user_by_id, profile_by_user_id = _build_author_maps(actor_ids)
 

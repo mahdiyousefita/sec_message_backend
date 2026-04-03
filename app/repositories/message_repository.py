@@ -121,3 +121,94 @@ def get_contact_timestamp_score(username, contact):
 
 def count_contacts_with_timestamps(username):
     return redis_client.zcard(f"contact_ts:{username}")
+
+
+GROUP_INBOX_TTL_SECONDS = 24 * 60 * 60
+
+
+def build_group_message_payload(
+    sender, group_id, encrypted_message, attachment=None,
+    message_type="text", reply_to_message_id=None,
+    reply_to_sender=None, encrypted_reply_preview=None,
+    encrypted_keys=None,
+):
+    now = datetime.now(timezone.utc)
+    ts = now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond:06d}Z"
+    return {
+        "from": sender,
+        "group_id": group_id,
+        "type": message_type,
+        "message": encrypted_message,
+        "encrypted_keys": encrypted_keys,
+        "attachment": attachment,
+        "message_id": str(uuid.uuid4()),
+        "timestamp": ts,
+        "reply_to_message_id": reply_to_message_id,
+        "reply_to_sender": reply_to_sender,
+        "encrypted_reply_preview": encrypted_reply_preview,
+    }
+
+
+
+def push_group_message_to_member(group_id, username, payload):
+    key = f"group_user_inbox:{username}:{group_id}"
+    data = json.dumps(payload)
+    pipe = redis_client.pipeline()
+    pipe.rpush(key, data)
+    pipe.expire(key, GROUP_INBOX_TTL_SECONDS)
+    pipe.execute()
+
+
+def peek_group_messages_for_user(username, group_id):
+    key = f"group_user_inbox:{username}:{group_id}"
+    raw = redis_client.lrange(key, 0, -1)
+    return [json.loads(msg) for msg in raw]
+
+
+_ACK_GROUP_BY_IDS_LUA = """
+local key = KEYS[1]
+local ttl  = tonumber(ARGV[1]) or 86400
+local id_set = {}
+for i = 2, #ARGV do
+    id_set[ARGV[i]] = true
+end
+local msgs = redis.call('lrange', key, 0, -1)
+redis.call('del', key)
+local kept = {}
+for _, raw in ipairs(msgs) do
+    local ok, msg = pcall(cjson.decode, raw)
+    if not (ok and msg and msg.message_id and id_set[msg.message_id]) then
+        kept[#kept + 1] = raw
+    end
+end
+if #kept > 0 then
+    redis.call('rpush', key, unpack(kept))
+    redis.call('expire', key, ttl)
+end
+return #msgs - #kept
+"""
+
+
+def ack_group_messages(username, group_id, message_ids):
+    if not message_ids:
+        return 0
+    key = f"group_user_inbox:{username}:{group_id}"
+    return redis_client.eval(
+        _ACK_GROUP_BY_IDS_LUA, 1, key,
+        str(GROUP_INBOX_TTL_SECONDS), *message_ids
+    )
+
+
+
+def record_group_conversation_timestamp(group_id, iso_timestamp=None):
+    if iso_timestamp is None:
+        ts = datetime.now(timezone.utc).timestamp()
+    else:
+        try:
+            dt = datetime.fromisoformat(iso_timestamp.replace("Z", "+00:00"))
+            ts = dt.timestamp()
+        except (ValueError, AttributeError):
+            ts = datetime.now(timezone.utc).timestamp()
+
+    key_prefix = "group_ts"
+    redis_client.zadd(f"{key_prefix}:global", {str(group_id): ts})

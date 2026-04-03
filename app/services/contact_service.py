@@ -1,6 +1,7 @@
 from app.services import follow_service
 from app.services import notification_service
 from app.socket_events import is_user_online
+from app.repositories import group_repository
 
 from app.models.user_model import User
 from app.models.profile_model import Profile
@@ -109,11 +110,31 @@ def get_contacts_with_message_status(username, page=1, limit=DEFAULT_CONTACTS_LI
             "last_message": last_message,
         })
 
+    current_user = User.query.filter_by(username=username).first()
+    groups = group_repository.get_groups_for_user(current_user.id) if current_user else []
+    group_list = []
+    for grp in groups:
+        from app.models.profile_model import Profile as Prof
+        creator_profile = Prof.query.filter_by(user_id=grp.creator_id).first()
+        group_list.append({
+            "type": "group",
+            "id": grp.id,
+            "name": grp.name,
+            "creator": {
+                "id": grp.creator_id,
+                "username": grp.creator.username,
+                "name": creator_profile.name if creator_profile else grp.creator.username,
+            },
+            "member_count": group_repository.get_group_member_count(grp.id),
+            "created_at": grp.created_at.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+        })
+
     return {
         "page": page,
         "limit": limit,
         "total": total,
         "contacts": result,
+        "groups": group_list,
     }
 
 

@@ -22,8 +22,10 @@ from app.routes.activity_notification_routes import activity_notification_bp
 from app.routes.follow_routes import follow_bp
 from app.routes.search_routes import search_bp
 from app.routes.admin_routes import admin_bp
+from app.routes.group_routes import group_bp
 
 import app.models.activity_notification_model  # noqa: F401 – register model with SQLAlchemy
+import app.models.group_model  # noqa: F401 – register model with SQLAlchemy
 
 
 def create_app():
@@ -73,6 +75,7 @@ def create_app():
     app.register_blueprint(follow_bp, url_prefix="/api")
     app.register_blueprint(search_bp, url_prefix="/api")
     app.register_blueprint(admin_bp, url_prefix="/admin")
+    app.register_blueprint(group_bp, url_prefix="/api/groups")
 
     with app.app_context():
         db.create_all()
