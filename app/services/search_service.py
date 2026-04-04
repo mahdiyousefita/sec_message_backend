@@ -3,6 +3,7 @@ from sqlalchemy.orm import joinedload
 from app.models.user_model import User
 from app.models.profile_model import Profile
 from app.models.post_model import Post
+from app.models.vote_model import Vote
 from app.services.post_service import _build_author_maps, _serialize_post
 
 
@@ -19,6 +20,27 @@ def _serialize_user(user, profile):
         "name": profile.name if profile else user.username,
         "profile_image_url": profile_image_url,
     }
+
+
+def _build_vote_map(posts: list[Post], viewer_username: str | None):
+    if not posts or not viewer_username:
+        return {}
+
+    viewer_user = User.query.filter_by(username=viewer_username).first()
+    if not viewer_user:
+        return {}
+
+    post_ids = {post.id for post in posts}
+    votes = (
+        Vote.query
+        .filter(
+            Vote.user_id == viewer_user.id,
+            Vote.target_type == "post",
+            Vote.target_id.in_(post_ids),
+        )
+        .all()
+    )
+    return {vote.target_id: vote.value for vote in votes}
 
 
 def search_users(query: str, page: int, limit: int):
@@ -51,7 +73,12 @@ def search_users(query: str, page: int, limit: int):
     }
 
 
-def search_posts(query: str, page: int, limit: int):
+def search_posts(
+    query: str,
+    page: int,
+    limit: int,
+    viewer_username: str | None = None,
+):
     if limit > 50:
         limit = 50
 
@@ -69,18 +96,35 @@ def search_posts(query: str, page: int, limit: int):
 
     author_ids = {p.author_id for p in posts}
     user_by_id, profile_by_user_id = _build_author_maps(author_ids)
+    vote_by_post_id = _build_vote_map(posts=posts, viewer_username=viewer_username)
+
+    serialized_posts = []
+    for post in posts:
+        payload = _serialize_post(post, user_by_id, profile_by_user_id)
+        payload["viewer_vote"] = int(vote_by_post_id.get(post.id, 0))
+        serialized_posts.append(payload)
 
     return {
         "page": page,
         "limit": limit,
         "total": total,
-        "posts": [_serialize_post(p, user_by_id, profile_by_user_id) for p in posts],
+        "posts": serialized_posts,
     }
 
 
-def search_all(query: str, page: int, limit: int):
+def search_all(
+    query: str,
+    page: int,
+    limit: int,
+    viewer_username: str | None = None,
+):
     users_result = search_users(query, page, limit)
-    posts_result = search_posts(query, page, limit)
+    posts_result = search_posts(
+        query=query,
+        page=page,
+        limit=limit,
+        viewer_username=viewer_username,
+    )
 
     return {
         "page": page,

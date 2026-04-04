@@ -165,6 +165,25 @@ class TestApiRoutes(unittest.TestCase):
         response = self.client.post("/api/auth/token", headers=headers)
         self.assertEqual(response.status_code, 422)
 
+    def test_auth_rotate_public_key_updates_user_key(self):
+        self._register("alice")
+        headers = self._auth_header("alice")
+
+        response = self.client.post(
+            "/api/auth/keys/rotate",
+            headers=headers,
+            json={"public_key": "alice_rotated_key"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["message"], "Public key updated")
+
+        from app.repositories import user_repository
+
+        with self.app.app_context():
+            user = user_repository.get_by_username("alice")
+            self.assertIsNotNone(user)
+            self.assertEqual(user.public_key, "alice_rotated_key")
+
     def test_create_post_requires_auth(self):
         response = self.client.post("/api/posts", json={"text": "hello"})
         self.assertEqual(response.status_code, 401)
@@ -194,6 +213,7 @@ class TestApiRoutes(unittest.TestCase):
         self.assertEqual(payload["posts"][0]["author"]["username"], "alice")
         self.assertEqual(payload["posts"][0]["author"]["name"], "alice")
         self.assertIsNone(payload["posts"][0]["author"]["profile_image_url"])
+        self.assertEqual(payload["posts"][0]["viewer_vote"], 0)
 
     def test_create_post_with_image_media_multipart(self):
         self._register("alice")
@@ -931,6 +951,7 @@ class TestApiRoutes(unittest.TestCase):
         self.assertEqual(alice_payload["posts"][0]["author"]["username"], "alice")
         self.assertEqual(alice_payload["posts"][0]["author"]["name"], "alice")
         self.assertIsNone(alice_payload["posts"][0]["author"]["profile_image_url"])
+        self.assertEqual(alice_payload["posts"][0]["viewer_vote"], 0)
 
         bob_posts = self.client.get("/api/profiles/bob/posts")
         self.assertEqual(bob_posts.status_code, 200)
@@ -941,6 +962,58 @@ class TestApiRoutes(unittest.TestCase):
         self.assertEqual(bob_payload["posts"][0]["author"]["username"], "bob")
         self.assertEqual(bob_payload["posts"][0]["author"]["name"], "bob")
         self.assertIsNone(bob_payload["posts"][0]["author"]["profile_image_url"])
+        self.assertEqual(bob_payload["posts"][0]["viewer_vote"], 0)
+
+    def test_posts_endpoints_include_viewer_vote_when_authenticated(self):
+        self._register("alice")
+        self._register("bob")
+        alice_headers = self._auth_header("alice")
+        bob_headers = self._auth_header("bob")
+
+        create_response = self.client.post(
+            "/api/posts",
+            json={"text": "persisted vote post"},
+            headers=bob_headers,
+        )
+        self.assertEqual(create_response.status_code, 201)
+        post_id = create_response.get_json()["post_id"]
+
+        vote_response = self.client.post(
+            "/api/votes",
+            json={
+                "target_type": "post",
+                "target_id": post_id,
+                "value": 1,
+            },
+            headers=alice_headers,
+        )
+        self.assertEqual(vote_response.status_code, 200)
+
+        feed_without_auth = self.client.get("/api/posts")
+        self.assertEqual(feed_without_auth.status_code, 200)
+        self.assertEqual(feed_without_auth.get_json()["posts"][0]["viewer_vote"], 0)
+
+        feed_with_auth = self.client.get("/api/posts", headers=alice_headers)
+        self.assertEqual(feed_with_auth.status_code, 200)
+        self.assertEqual(feed_with_auth.get_json()["posts"][0]["viewer_vote"], 1)
+
+        profile_posts = self.client.get("/api/profiles/bob/posts", headers=alice_headers)
+        self.assertEqual(profile_posts.status_code, 200)
+        self.assertEqual(profile_posts.get_json()["posts"][0]["viewer_vote"], 1)
+
+        search_posts = self.client.get(
+            "/api/search/posts?q=persisted",
+            headers=alice_headers,
+        )
+        self.assertEqual(search_posts.status_code, 200)
+        self.assertEqual(search_posts.get_json()["posts"][0]["viewer_vote"], 1)
+
+        search_all = self.client.get(
+            "/api/search?q=persisted",
+            headers=alice_headers,
+        )
+        self.assertEqual(search_all.status_code, 200)
+        self.assertEqual(search_all.get_json()["posts"][0]["viewer_vote"], 1)
 
 
     def test_message_attachment_upload_success(self):

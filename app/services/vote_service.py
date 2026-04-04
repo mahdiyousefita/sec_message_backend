@@ -33,7 +33,7 @@ def vote(username: str, target_type: str, target_id: int, value: int):
 
     elif target_type == "post":
         post = Post.query.get(target_id)
-        if post:
+        if post and hasattr(post, "score"):
             post.score += delta
 
     db.session.commit()

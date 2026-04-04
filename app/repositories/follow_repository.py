@@ -63,6 +63,18 @@ def get_following_usernames(follower_id: int):
     return [row[0] for row in rows]
 
 
+def get_follower_usernames(following_id: int):
+    follower_user = aliased(User)
+    rows = (
+        db.session.query(follower_user.username)
+        .join(Follow, Follow.follower_id == follower_user.id)
+        .filter(Follow.following_id == following_id)
+        .order_by(follower_user.username.asc())
+        .all()
+    )
+    return [row[0] for row in rows]
+
+
 def get_followers_page(following_id: int, page: int, limit: int):
     follower_user = aliased(User)
 

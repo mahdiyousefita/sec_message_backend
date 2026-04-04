@@ -1,5 +1,5 @@
 from flask import Blueprint, request, jsonify
-from flask_jwt_extended import jwt_required, get_jwt_identity
+from flask_jwt_extended import get_jwt_identity, jwt_required
 from app.services.post_service import (
     MediaStorageError,
     create_post_with_media,
@@ -47,10 +47,11 @@ def create_post():
 
 
 @post_bp.route("/posts", methods=["GET"])
-# @jwt_required()
+@jwt_required(optional=True)
 def list_posts():
+    viewer_username = get_jwt_identity()
     page = request.args.get("page", default=1, type=int)
     limit = request.args.get("limit", default=10, type=int)
 
-    data = get_posts(page, limit)
+    data = get_posts(page, limit, viewer_username=viewer_username)
     return jsonify(data), 200

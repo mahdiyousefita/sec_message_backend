@@ -9,6 +9,7 @@ from app.services.group_service import (
     NotGroupCreatorError,
 )
 from app.services import message_service
+from app.extensions.extensions import socketio
 
 group_bp = Blueprint("groups", __name__)
 
@@ -49,6 +50,17 @@ def list_groups():
         return jsonify({"error": str(exc)}), 400
 
 
+@group_bp.route("/unread", methods=["GET"])
+@jwt_required()
+def unread_group_messages():
+    username = get_jwt_identity()
+    try:
+        summary = group_service.get_group_unread_summary(username)
+        return jsonify(summary), 200
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
 @group_bp.route("/<int:group_id>", methods=["GET"])
 @jwt_required()
 def get_group(group_id):
@@ -56,6 +68,19 @@ def get_group(group_id):
     try:
         group = group_service.get_group_detail(username, group_id)
         return jsonify({"group": group})
+    except NotGroupMemberError as exc:
+        return jsonify({"error": str(exc)}), 403
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 404
+
+
+@group_bp.route("/<int:group_id>/members", methods=["GET"])
+@jwt_required()
+def list_group_members(group_id):
+    username = get_jwt_identity()
+    try:
+        members_payload = group_service.get_group_members(username, group_id)
+        return jsonify(members_payload), 200
     except NotGroupMemberError as exc:
         return jsonify({"error": str(exc)}), 403
     except ValueError as exc:
@@ -70,13 +95,52 @@ def add_member(group_id):
     if not isinstance(data, dict):
         return jsonify({"error": "Invalid JSON body"}), 400
 
-    target_username = data.get("username", "").strip()
-    if not target_username:
-        return jsonify({"error": "username is required"}), 400
+    usernames = data.get("usernames")
+    single_target_username = None
+    if isinstance(usernames, list):
+        target_usernames = usernames
+    else:
+        target_username = data.get("username", "").strip()
+        if not target_username:
+            return jsonify({"error": "username is required"}), 400
+        single_target_username = target_username
+        target_usernames = [target_username]
 
     try:
-        group_service.add_member_to_group(username, group_id, target_username)
-        return jsonify({"message": "Member added"}), 200
+        result = group_service.add_members_to_group(
+            username,
+            group_id,
+            target_usernames,
+        )
+
+        for added_username in result["added"]:
+            socketio.emit(
+                "group_member_key_updated",
+                {
+                    "username": added_username,
+                    "group_id": group_id,
+                },
+                room=f"group_{group_id}",
+            )
+
+        if single_target_username and single_target_username in result["already_members"]:
+            return jsonify({"error": "User is already a member of this group"}), 400
+
+        if single_target_username:
+            return jsonify(
+                {
+                    "message": "Member added",
+                    "added": result["added"],
+                    "already_members": result["already_members"],
+                }
+            ), 200
+
+        return jsonify(
+            {
+                "added": result["added"],
+                "already_members": result["already_members"],
+            }
+        ), 200
     except NotGroupCreatorError as exc:
         return jsonify({"error": str(exc)}), 403
     except NotMutualFollowError as exc:

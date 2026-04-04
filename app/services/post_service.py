@@ -7,6 +7,7 @@ from app.extensions.minio_client import get_minio_client
 from app.models.profile_model import Profile
 from app.models.post_model import Post
 from app.models.user_model import User
+from app.models.vote_model import Vote
 from app.repositories.post_repository import create_post_by_username
 from app.repositories.media_repository import add_media
 from app.repositories import user_repository
@@ -88,6 +89,7 @@ def _serialize_post(post, user_by_id: dict, profile_by_user_id: dict):
         "text": post.text,
         "author": author_payload,
         "created_at": post.created_at.isoformat(),
+        "viewer_vote": 0,
         "media": [
             {
                 "id": media.id,
@@ -97,6 +99,33 @@ def _serialize_post(post, user_by_id: dict, profile_by_user_id: dict):
             for media in post.media
         ]
     }
+
+
+def _viewer_user_id(viewer_username: str | None) -> int | None:
+    if not viewer_username:
+        return None
+
+    viewer_user = user_repository.get_by_username(viewer_username)
+    if not viewer_user:
+        return None
+
+    return viewer_user.id
+
+
+def _build_vote_map(post_ids: set[int], viewer_user_id: int | None):
+    if not post_ids or not viewer_user_id:
+        return {}
+
+    votes = (
+        Vote.query
+        .filter(
+            Vote.user_id == viewer_user_id,
+            Vote.target_type == "post",
+            Vote.target_id.in_(post_ids),
+        )
+        .all()
+    )
+    return {vote.target_id: vote.value for vote in votes}
 
 
 def _extension_for_mimetype(mimetype: str) -> str:
@@ -326,7 +355,7 @@ def create_post_with_media(username, text, files):
     return {"post_id": post.id}
 
 
-def get_posts(page: int, limit: int):
+def get_posts(page: int, limit: int, viewer_username: str | None = None):
     if limit > 50:
         limit = 50
 
@@ -339,9 +368,18 @@ def get_posts(page: int, limit: int):
     total = query.count()
     posts = query.offset((page - 1) * limit).limit(limit).all()
     author_ids = {post.author_id for post in posts}
+    post_ids = {post.id for post in posts}
     user_by_id, profile_by_user_id = _build_author_maps(author_ids)
+    vote_by_post_id = _build_vote_map(
+        post_ids=post_ids,
+        viewer_user_id=_viewer_user_id(viewer_username),
+    )
 
-    result = [_serialize_post(post, user_by_id, profile_by_user_id) for post in posts]
+    result = []
+    for post in posts:
+        payload = _serialize_post(post, user_by_id, profile_by_user_id)
+        payload["viewer_vote"] = int(vote_by_post_id.get(post.id, 0))
+        result.append(payload)
 
     return {
         "page": page,
@@ -351,7 +389,12 @@ def get_posts(page: int, limit: int):
     }
 
 
-def get_posts_by_username(username: str, page: int, limit: int):
+def get_posts_by_username(
+    username: str,
+    page: int,
+    limit: int,
+    viewer_username: str | None = None,
+):
     user = user_repository.get_by_username(username)
     if not user:
         raise ValueError("User not found")
@@ -369,11 +412,22 @@ def get_posts_by_username(username: str, page: int, limit: int):
     total = query.count()
     posts = query.offset((page - 1) * limit).limit(limit).all()
     author_ids = {post.author_id for post in posts}
+    post_ids = {post.id for post in posts}
     user_by_id, profile_by_user_id = _build_author_maps(author_ids)
+    vote_by_post_id = _build_vote_map(
+        post_ids=post_ids,
+        viewer_user_id=_viewer_user_id(viewer_username),
+    )
+
+    serialized_posts = []
+    for post in posts:
+        payload = _serialize_post(post, user_by_id, profile_by_user_id)
+        payload["viewer_vote"] = int(vote_by_post_id.get(post.id, 0))
+        serialized_posts.append(payload)
 
     return {
         "page": page,
         "limit": limit,
         "total": total,
-        "posts": [_serialize_post(post, user_by_id, profile_by_user_id) for post in posts]
+        "posts": serialized_posts
     }

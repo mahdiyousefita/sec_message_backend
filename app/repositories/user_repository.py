@@ -6,7 +6,24 @@ def get_by_username(username: str):
     return User.query.filter_by(username=username).first()
 
 
-def create_user(username, password_hash, public_key, name=None):
+def update_public_key(username: str, public_key: str) -> bool:
+    user = get_by_username(username)
+    if not user:
+        return False
+
+    user.public_key = public_key
+    db.session.commit()
+    return True
+
+
+def create_user(
+    username,
+    password_hash,
+    public_key,
+    name=None,
+    *,
+    auto_commit=True,
+):
     user = User(
         username=username,
         password_hash=password_hash,
@@ -20,5 +37,6 @@ def create_user(username, password_hash, public_key, name=None):
         name=(name or username).strip(),
     )
 
-    db.session.commit()
+    if auto_commit:
+        db.session.commit()
     return user

@@ -66,12 +66,19 @@ def get_profile(username):
 
 
 @profile_bp.route("/profiles/<username>/posts", methods=["GET"])
+@jwt_required(optional=True)
 def get_profile_posts(username):
+    viewer_username = get_jwt_identity()
     page = request.args.get("page", default=1, type=int)
     limit = request.args.get("limit", default=10, type=int)
 
     try:
-        data = profile_service.get_profile_posts(username, page, limit)
+        data = profile_service.get_profile_posts(
+            username=username,
+            page=page,
+            limit=limit,
+            viewer_username=viewer_username,
+        )
         return jsonify(data), 200
     except ValueError as e:
         return jsonify({"error": str(e)}), 404

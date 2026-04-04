@@ -30,7 +30,13 @@ def create_comment(post_id):
         )
 
         try:
-            activity_notification_service.notify_comment(username, post_id, text)
+            activity_notification_service.notify_comment(
+                actor_username=username,
+                post_id=post_id,
+                comment_text=text,
+                comment_id=comment.id,
+                parent_comment_id=parent_id
+            )
         except Exception:
             pass
 

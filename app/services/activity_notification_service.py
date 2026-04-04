@@ -4,6 +4,7 @@ from datetime import timezone
 from flask import current_app, has_request_context, request
 
 from app.db import db
+from app.models.comment_model import Comment
 from app.models.post_model import Post
 from app.models.user_model import User
 from app.models.profile_model import Profile
@@ -159,37 +160,82 @@ def notify_unfollow(actor_username, target_username):
     _emit_activity_notification(target_username, payload)
 
 
-def notify_comment(actor_username, post_id, comment_text):
+def notify_comment(
+    actor_username,
+    post_id,
+    comment_text,
+    comment_id=None,
+    parent_comment_id=None,
+):
     actor = user_repository.get_by_username(actor_username)
     if not actor:
         return
 
     post = Post.query.get(post_id)
-    if not post or post.author_id == actor.id:
+    if not post:
         return
 
-    post_owner = User.query.get(post.author_id)
-    if not post_owner:
-        return
-
-    extra = json.dumps({
+    base_extra = {
         "comment_preview": (comment_text or "")[:120],
         "post_text_preview": (post.text or "")[:120],
-    })
+        "post_id": post.id,
+        "comment_id": comment_id,
+    }
 
-    notif = create_notification(
-        recipient_id=post.author_id,
-        actor_id=actor.id,
-        kind="comment",
-        target_type="post",
-        target_id=post.id,
-        extra=extra,
-    )
+    notifications_by_recipient = {}
+
+    post_owner = User.query.get(post.author_id)
+    if post_owner and post_owner.id != actor.id:
+        target_type = "comment" if comment_id is not None else "post"
+        target_id = comment_id if comment_id is not None else post.id
+        notifications_by_recipient[post_owner.id] = {
+            "recipient": post_owner,
+            "kind": "comment",
+            "target_type": target_type,
+            "target_id": target_id,
+            "extra": json.dumps(base_extra),
+        }
+
+    if parent_comment_id:
+        parent_comment = Comment.query.get(parent_comment_id)
+        if (
+            parent_comment
+            and parent_comment.post_id == post.id
+            and parent_comment.author_id != actor.id
+        ):
+            parent_author = User.query.get(parent_comment.author_id)
+            if parent_author:
+                reply_extra = dict(base_extra)
+                reply_extra["parent_comment_id"] = parent_comment.id
+                notifications_by_recipient[parent_author.id] = {
+                    "recipient": parent_author,
+                    "kind": "comment_reply",
+                    "target_type": "comment",
+                    "target_id": comment_id,
+                    "extra": json.dumps(reply_extra),
+                }
+
+    if not notifications_by_recipient:
+        return
+
+    created_notifications = []
+    for data in notifications_by_recipient.values():
+        recipient = data["recipient"]
+        notif = create_notification(
+            recipient_id=recipient.id,
+            actor_id=actor.id,
+            kind=data["kind"],
+            target_type=data["target_type"],
+            target_id=data["target_id"],
+            extra=data["extra"],
+        )
+        created_notifications.append((recipient, notif))
     db.session.commit()
 
     user_by_id, profile_by_user_id = _build_author_maps({actor.id})
-    payload = _serialize_notification(notif, user_by_id, profile_by_user_id)
-    _emit_activity_notification(post_owner.username, payload)
+    for recipient, notif in created_notifications:
+        payload = _serialize_notification(notif, user_by_id, profile_by_user_id)
+        _emit_activity_notification(recipient.username, payload)
 
 
 def notify_vote(actor_username, target_type, target_id, value):

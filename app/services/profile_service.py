@@ -279,5 +279,15 @@ def update_profile(
     return _serialize_profile(user, profile)
 
 
-def get_profile_posts(username: str, page: int, limit: int):
-    return get_posts_by_username(username, page, limit)
+def get_profile_posts(
+    username: str,
+    page: int,
+    limit: int,
+    viewer_username: str | None = None,
+):
+    return get_posts_by_username(
+        username=username,
+        page=page,
+        limit=limit,
+        viewer_username=viewer_username,
+    )

@@ -1,45 +1,983 @@
-<!DOCTYPE html>
-<html lang="fa">
+<!doctype html>
+<html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <title>صفحه اول</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Dino Social</title>
+    <meta
+        name="description"
+        content="Dino Social is a clean social app for posts, chat, and groups."
+    >
     <style>
+        :root {
+            --bg: #f7f3ec;
+            --bg-soft: #fcfaf6;
+            --surface: rgba(255, 252, 248, 0.84);
+            --surface-strong: #fffdf9;
+            --text: #171512;
+            --muted: #666055;
+            --line: rgba(44, 39, 33, 0.12);
+            --line-strong: rgba(44, 39, 33, 0.2);
+            --accent: #26483d;
+            --accent-soft: #dfeae3;
+            --warm: #eed8bc;
+            --shadow: 0 26px 60px rgba(26, 22, 18, 0.08);
+            --shadow-soft: 0 16px 34px rgba(26, 22, 18, 0.06);
+            --radius-xl: 32px;
+            --radius-lg: 24px;
+            --radius-md: 18px;
+            --radius-sm: 14px;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        html {
+            scroll-behavior: smooth;
+        }
+
         body {
-            font-family: Tahoma, sans-serif;
-            background-color: #f5f5f5;
             margin: 0;
-            padding: 0;
-            display: flex;
-            justify-content: center;
-            align-items: center;
             min-height: 100vh;
+            color: var(--text);
+            background:
+                radial-gradient(circle at top left, rgba(255, 255, 255, 0.85), transparent 30%),
+                radial-gradient(circle at 84% 12%, rgba(238, 216, 188, 0.46), transparent 22%),
+                linear-gradient(180deg, #fdfbf7 0%, var(--bg) 58%, #f1eadf 100%);
+            font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
+            line-height: 1.6;
+        }
+
+        a {
+            color: inherit;
+            text-decoration: none;
+        }
+
+        button,
+        a.button {
+            font: inherit;
+        }
+
+        .page-shell {
+            position: relative;
+            overflow: hidden;
+        }
+
+        .page-shell::before,
+        .page-shell::after {
+            content: "";
+            position: absolute;
+            border-radius: 999px;
+            pointer-events: none;
+            filter: blur(14px);
+            opacity: 0.7;
+        }
+
+        .page-shell::before {
+            width: 240px;
+            height: 240px;
+            top: 72px;
+            right: -70px;
+            background: rgba(223, 234, 227, 0.9);
+        }
+
+        .page-shell::after {
+            width: 180px;
+            height: 180px;
+            left: -38px;
+            bottom: 160px;
+            background: rgba(238, 216, 188, 0.72);
+        }
+
+        .container {
+            width: min(1100px, calc(100% - 40px));
+            margin: 0 auto;
+            position: relative;
+            z-index: 1;
+        }
+
+        .site-header {
+            padding: 24px 0 10px;
+        }
+
+        .site-nav {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 18px;
+        }
+
+        .brand {
+            display: inline-flex;
+            align-items: center;
+            gap: 12px;
+            font-weight: 700;
+            letter-spacing: -0.03em;
+        }
+
+        .brand-mark {
+            width: 42px;
+            height: 42px;
+            border-radius: 14px;
+            display: grid;
+            place-items: center;
+            background: linear-gradient(135deg, #203f34, #507766);
+            color: #faf6ee;
+            font-size: 0.95rem;
+            box-shadow: 0 12px 24px rgba(38, 72, 61, 0.16);
+        }
+
+        .brand-copy {
+            display: flex;
             flex-direction: column;
+            gap: 2px;
         }
 
-        h1 {
-            color: #333;
+        .brand-copy strong {
+            font-size: 1rem;
+        }
+
+        .brand-copy span,
+        .nav-note,
+        .eyebrow,
+        .section-label,
+        .card-meta,
+        .feature-card p,
+        .release-copy p,
+        .demo-copy p,
+        .demo-note,
+        .availability-note,
+        .download-feedback {
+            color: var(--muted);
+        }
+
+        .nav-pill,
+        .eyebrow,
+        .availability-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 14px;
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.72);
+            border: 1px solid var(--line);
+            box-shadow: var(--shadow-soft);
+            font-size: 0.95rem;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #648b75;
+            box-shadow: 0 0 0 6px rgba(100, 139, 117, 0.14);
+            animation: pulseDot 2.6s ease-in-out infinite;
+        }
+
+        .hero {
+            padding: 30px 0 56px;
+        }
+
+        .hero-grid {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) minmax(340px, 0.92fr);
+            gap: 34px;
+            align-items: center;
+        }
+
+        .hero-copy {
+            max-width: 34rem;
+        }
+
+        .eyebrow {
+            margin-bottom: 18px;
+        }
+
+        .hero h1,
+        .section-title,
+        .release-copy h2,
+        .demo-copy h3 {
+            margin: 0;
+            letter-spacing: -0.05em;
+            color: var(--text);
+        }
+
+        .hero h1,
+        .release-copy h2 {
+            font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+        }
+
+        .hero h1 {
+            font-size: clamp(3rem, 7vw, 5.4rem);
+            line-height: 1.03;
+            max-width: 11ch;
+        }
+
+        .hero-copy p {
+            margin: 18px 0 0;
+            font-size: 1.08rem;
+        }
+
+        .action-row {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 14px;
+            margin-top: 24px;
+        }
+
+        .button {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            min-height: 54px;
+            padding: 14px 22px;
+            border-radius: 999px;
+            border: 1px solid transparent;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+            transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease, background-color 0.2s ease;
+        }
+
+        .button.primary {
+            background: var(--text);
+            color: #fffdf8;
+            box-shadow: 0 18px 30px rgba(23, 21, 18, 0.14);
+        }
+
+        .button.primary:hover,
+        .button.primary:focus-visible {
+            transform: translateY(-2px);
+            box-shadow: 0 22px 36px rgba(23, 21, 18, 0.16);
+        }
+
+        .button.secondary {
+            background: rgba(255, 255, 255, 0.74);
+            color: var(--text);
+            border-color: var(--line);
+            box-shadow: var(--shadow-soft);
+        }
+
+        .button[aria-disabled="true"] {
+            color: var(--muted);
+            background: rgba(255, 255, 255, 0.56);
+            border-color: var(--line);
+            box-shadow: none;
+            cursor: not-allowed;
+            pointer-events: none;
+        }
+
+        .availability-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px 16px;
+            align-items: center;
+            margin-top: 16px;
+        }
+
+        .availability-note {
+            font-size: 0.96rem;
+        }
+
+        .download-feedback {
+            margin: 12px 0 0;
+            font-size: 0.96rem;
+            min-height: 1.5em;
+        }
+
+        .showcase {
+            --rotate-x: 0deg;
+            --rotate-y: 0deg;
+            --shift-x: 0px;
+            --shift-y: 0px;
+            position: relative;
+            min-height: 660px;
+            padding: 26px;
+            border-radius: var(--radius-xl);
+            border: 1px solid var(--line);
+            background:
+                radial-gradient(circle at top right, rgba(223, 234, 227, 0.82), transparent 34%),
+                linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(249, 245, 238, 0.94));
+            box-shadow: var(--shadow);
+            overflow: hidden;
+        }
+
+        .showcase::before {
+            content: "";
+            position: absolute;
+            width: 320px;
+            height: 320px;
+            inset: 40px auto auto 110px;
+            border-radius: 50%;
+            border: 1px dashed rgba(38, 72, 61, 0.16);
+            animation: slowSpin 18s linear infinite;
+        }
+
+        .showcase::after {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(180deg, rgba(255, 255, 255, 0.16), transparent 30%);
+            pointer-events: none;
+        }
+
+        .showcase-stage {
+            position: relative;
+            z-index: 1;
+            height: 100%;
+            min-height: 608px;
+        }
+
+        .showcase-float {
+            position: absolute;
+            padding: 10px 14px;
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.86);
+            border: 1px solid rgba(44, 39, 33, 0.08);
+            box-shadow: var(--shadow-soft);
+            font-size: 0.9rem;
+            white-space: nowrap;
+            z-index: 2;
+        }
+
+        .showcase-float.top {
+            top: 18px;
+            left: 20px;
+            transform: translate(calc(var(--shift-x) * 0.28), calc(var(--shift-y) * 0.28));
+            animation: bob 6s ease-in-out infinite;
+        }
+
+        .showcase-float.right {
+            top: 34px;
+            right: 18px;
+            transform: translate(calc(var(--shift-x) * -0.22), calc(var(--shift-y) * 0.22));
+            animation: bob 7s ease-in-out infinite 0.5s;
+        }
+
+        .showcase-float.bottom {
+            bottom: 18px;
+            left: 28px;
+            transform: translate(calc(var(--shift-x) * 0.24), calc(var(--shift-y) * -0.2));
+            animation: bob 6.6s ease-in-out infinite 0.8s;
+        }
+
+        .demo-surface {
+            position: absolute;
+            inset: 92px 34px 18px 82px;
+            display: flex;
+            flex-direction: column;
+            gap: 18px;
+            padding: 22px;
+            border-radius: 28px;
+            border: 1px solid rgba(44, 39, 33, 0.08);
+            background: rgba(255, 255, 255, 0.82);
+            box-shadow: 0 26px 54px rgba(22, 20, 17, 0.09);
+            z-index: 1;
+            transform-style: preserve-3d;
+            transform:
+                perspective(1200px)
+                rotateX(var(--rotate-x))
+                rotateY(var(--rotate-y));
+            transition: transform 160ms ease, box-shadow 160ms ease;
+        }
+
+        .showcase:hover .demo-surface {
+            box-shadow: 0 30px 62px rgba(22, 20, 17, 0.12);
+        }
+
+        .demo-tabs {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px;
+            width: fit-content;
+            border-radius: 999px;
+            background: rgba(246, 241, 233, 0.9);
+            border: 1px solid rgba(44, 39, 33, 0.08);
+        }
+
+        .demo-tab {
+            padding: 9px 14px;
+            border: 0;
+            border-radius: 999px;
+            background: transparent;
+            color: var(--muted);
+            cursor: pointer;
+            transition: background-color 0.2s ease, color 0.2s ease, transform 0.2s ease;
+        }
+
+        .demo-tab:hover,
+        .demo-tab:focus-visible {
+            transform: translateY(-1px);
+        }
+
+        .demo-tab.active {
+            background: var(--text);
+            color: #fffdf8;
+        }
+
+        .demo-copy {
+            display: grid;
+            gap: 10px;
+        }
+
+        .card-meta,
+        .section-label {
+            font-size: 0.82rem;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+        }
+
+        .demo-copy h3 {
+            font-size: clamp(1.5rem, 3vw, 2rem);
+            line-height: 1.1;
+        }
+
+        #demo-title {
+            white-space: nowrap;
+        }
+
+        .demo-copy p {
+            margin: 0;
+            max-width: 28rem;
+            font-size: 1rem;
+        }
+
+        .demo-list {
+            display: grid;
+            gap: 10px;
+        }
+
+        .demo-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 14px;
+            padding: 14px 16px;
+            border-radius: 18px;
+            border: 1px solid rgba(44, 39, 33, 0.08);
+            background: rgba(250, 247, 241, 0.78);
+            transition: transform 0.2s ease, border-color 0.2s ease, background-color 0.2s ease;
+        }
+
+        .demo-row.active {
+            background: rgba(223, 234, 227, 0.78);
+            border-color: rgba(38, 72, 61, 0.18);
+            transform: translateX(6px);
+        }
+
+        .demo-note {
+            margin-top: auto;
+            font-size: 0.94rem;
+        }
+
+        .section {
+            padding: 24px 0 24px;
+        }
+
+        .section-intro {
+            display: grid;
+            gap: 12px;
             margin-bottom: 20px;
-            text-shadow: 1px 1px 2px rgba(0,0,0,0.2);
         }
 
-        img {
-            display: block;
-            max-width: 90%;
-            height: auto;
-            border-radius: 10px;
-            box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+        .section-title {
+            font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+            font-size: clamp(2rem, 4vw, 3rem);
+            line-height: 1.08;
+            max-width: 12ch;
         }
 
-        p {
-            margin-top: 20px;
-            color: #666;
-            font-size: 18px;
+        .section-intro p {
+            margin: 0;
+            max-width: 34rem;
+            color: var(--muted);
+        }
+
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 14px;
+        }
+
+        .feature-card,
+        .release-card {
+            border: 1px solid var(--line);
+            background: var(--surface);
+            box-shadow: var(--shadow-soft);
+            backdrop-filter: blur(10px);
+        }
+
+        .feature-card {
+            padding: 20px;
+            border-radius: 24px;
+            transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+        }
+
+        .feature-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 20px 40px rgba(26, 22, 18, 0.08);
+            border-color: var(--line-strong);
+        }
+
+        .feature-number {
+            display: inline-grid;
+            place-items: center;
+            width: 34px;
+            height: 34px;
+            border-radius: 12px;
+            background: var(--accent-soft);
+            color: var(--accent);
+            font-size: 0.88rem;
+            font-weight: 700;
+            margin-bottom: 18px;
+        }
+
+        .feature-card h3 {
+            margin: 0 0 8px;
+            font-size: 1.05rem;
+            letter-spacing: -0.03em;
+        }
+
+        .release {
+            padding: 20px 0 72px;
+        }
+
+        .release-card {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            gap: 28px;
+            align-items: center;
+            padding: 28px;
+            border-radius: 30px;
+            background:
+                radial-gradient(circle at top right, rgba(223, 234, 227, 0.74), transparent 34%),
+                linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(248, 244, 237, 0.95));
+        }
+
+        .release-copy h2 {
+            font-size: clamp(2rem, 4vw, 3rem);
+            line-height: 1.06;
+            max-width: 16ch;
+        }
+
+        .release-copy p {
+            margin: 12px 0 0;
+            max-width: 34rem;
+        }
+
+        .release-actions {
+            display: grid;
+            gap: 12px;
+            justify-items: start;
+        }
+
+        .reveal {
+            animation: fadeUp 0.72s ease both;
+        }
+
+        .delay-1 {
+            animation-delay: 0.08s;
+        }
+
+        .delay-2 {
+            animation-delay: 0.16s;
+        }
+
+        @keyframes fadeUp {
+            from {
+                opacity: 0;
+                transform: translateY(16px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @keyframes pulseDot {
+            0%,
+            100% {
+                box-shadow: 0 0 0 6px rgba(100, 139, 117, 0.14);
+            }
+            50% {
+                box-shadow: 0 0 0 10px rgba(100, 139, 117, 0.08);
+            }
+        }
+
+        @keyframes bob {
+            0%,
+            100% {
+                translate: 0 0;
+            }
+            50% {
+                translate: 0 -6px;
+            }
+        }
+
+        @keyframes slowSpin {
+            from {
+                transform: rotate(0deg);
+            }
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        @media (max-width: 980px) {
+            .hero-grid,
+            .release-card {
+                grid-template-columns: 1fr;
+            }
+
+            .hero h1,
+            .section-title,
+            .release-copy h2 {
+                max-width: none;
+            }
+
+            .feature-grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+
+            .release-actions {
+                justify-items: stretch;
+            }
+        }
+
+        @media (max-width: 720px) {
+            .container {
+                width: min(100% - 24px, 1100px);
+            }
+
+            .site-nav {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+
+            .hero {
+                padding-top: 20px;
+            }
+
+            .hero h1 {
+                font-size: clamp(2.6rem, 14vw, 4rem);
+            }
+
+            .action-row,
+            .availability-row {
+                flex-direction: column;
+                align-items: stretch;
+            }
+
+            .button,
+            .nav-pill {
+                width: 100%;
+                justify-content: center;
+            }
+
+            .showcase {
+                min-height: 600px;
+                padding: 20px;
+            }
+
+            .showcase::before {
+                inset: 76px auto auto 38px;
+                width: 240px;
+                height: 240px;
+            }
+
+            .showcase-float.top {
+                left: 14px;
+            }
+
+            .showcase-float.right {
+                top: 28px;
+                right: 12px;
+            }
+
+            .showcase-float.bottom {
+                left: 18px;
+                bottom: 14px;
+            }
+
+            .demo-surface {
+                inset: 86px 18px 18px 18px;
+            }
+
+            .feature-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            html {
+                scroll-behavior: auto;
+            }
+
+            *,
+            *::before,
+            *::after {
+                animation: none !important;
+                transition: none !important;
+            }
+
+            .showcase,
+            .demo-surface,
+            .showcase-float {
+                transform: none !important;
+            }
         }
     </style>
 </head>
 <body>
-    <h1>خوش آمدید!</h1>
-    <img src="{{ url_for('static', filename='images/big_ass.jpeg') }}" alt="Big Image">
-    <p>صفحه اصلی سایت شما</p>
+    <div class="page-shell">
+        <header class="site-header">
+            <div class="container site-nav">
+                <a class="brand" href="{{ url_for('main.main') }}">
+                    <span class="brand-mark">DS</span>
+                    <span class="brand-copy">
+                        <strong>Dino Social</strong>
+                        <span>Posts, chat, and groups</span>
+                    </span>
+                </a>
+
+                <div class="nav-pill">
+                    <span class="status-dot"></span>
+                    <span>Android build available</span>
+                </div>
+            </div>
+        </header>
+
+        <main>
+            <section class="hero">
+                <div class="container hero-grid">
+                    <div class="hero-copy reveal">
+                        <div class="eyebrow">Dino Social</div>
+                        <h1>A calmer place for posts, chats, and groups.</h1>
+                        <p>
+                            Dino Social keeps updates, messages, and smaller communities in one clean app.
+                            It is designed to feel familiar, lightweight, and easy to return to.
+                        </p>
+
+                        <div class="action-row">
+                            <a
+                                id="download-button"
+                                class="button primary"
+                                href="{{ url_for('main.download_apk') }}"
+                                download
+                            >
+                                Download latest release
+                            </a>
+                            <a class="button secondary" href="#" aria-disabled="true" tabindex="-1">
+                                Web version
+                            </a>
+                        </div>
+
+                        <div class="availability-row">
+                            <span class="availability-pill">
+                                <span class="status-dot"></span>
+                                Latest Android release
+                            </span>
+                            <span class="availability-note">Web version available soon</span>
+                        </div>
+
+                        <p id="download-feedback" class="download-feedback" aria-live="polite">
+                            Download the latest Android APK directly from this page.
+                        </p>
+                    </div>
+
+                    <aside class="showcase reveal delay-1" id="showcase">
+                        <div class="showcase-stage">
+                            <div class="showcase-float top">new post</div>
+                            <div class="showcase-float right">3 replies</div>
+                            <div class="showcase-float bottom">group update</div>
+
+                            <div class="demo-surface" id="demo-surface">
+                                <div class="demo-tabs" role="tablist" aria-label="Preview sections">
+                                    <button class="demo-tab active" type="button" data-mode="posts">Posts</button>
+                                    <button class="demo-tab" type="button" data-mode="chat">Chat</button>
+                                    <button class="demo-tab" type="button" data-mode="groups">Groups</button>
+                                </div>
+
+                                <div class="demo-copy">
+                                    <div class="card-meta">Interactive preview</div>
+                                    <h3 id="demo-title">Posting stays simple.</h3>
+                                    <p id="demo-text">Share updates without digging through busy menus.</p>
+                                </div>
+
+                                <div class="demo-list">
+                                    <div class="demo-row active" data-row="posts">
+                                        <span>Clean feed</span>
+                                        <span>01</span>
+                                    </div>
+                                    <div class="demo-row" data-row="chat">
+                                        <span>Real-time chat</span>
+                                        <span>02</span>
+                                    </div>
+                                    <div class="demo-row" data-row="groups">
+                                        <span>Small groups</span>
+                                        <span>03</span>
+                                    </div>
+                                </div>
+
+                                <div class="demo-note">
+                                    Move here or tap a tab to switch between posts, chat, and groups.
+                                </div>
+                            </div>
+                        </div>
+                    </aside>
+                </div>
+            </section>
+
+            <section class="section">
+                <div class="container">
+                    <div class="section-intro reveal delay-1">
+                        <div class="section-label">What it focuses on</div>
+                        <h2 class="section-title">Built around the basics people actually use.</h2>
+                        <p>
+                            Posts, chat, groups, and activity stay close together. The interface stays quiet.
+                        </p>
+                    </div>
+
+                    <div class="feature-grid">
+                        <article class="feature-card reveal delay-1">
+                            <div class="feature-number">01</div>
+                            <h3>Posts</h3>
+                            <p>Share updates in a clean feed.</p>
+                        </article>
+
+                        <article class="feature-card reveal delay-1">
+                            <div class="feature-number">02</div>
+                            <h3>Chat</h3>
+                            <p>Messages stay quick and easy to follow.</p>
+                        </article>
+
+                        <article class="feature-card reveal delay-2">
+                            <div class="feature-number">03</div>
+                            <h3>Groups</h3>
+                            <p>Keep smaller communities in one place.</p>
+                        </article>
+
+                        <article class="feature-card reveal delay-2">
+                            <div class="feature-number">04</div>
+                            <h3>Activity</h3>
+                            <p>Replies and notifications stay easy to scan.</p>
+                        </article>
+                    </div>
+                </div>
+            </section>
+
+            <section class="release">
+                <div class="container">
+                    <div class="release-card reveal delay-2">
+                        <div class="release-copy">
+                            <div class="section-label">Availability</div>
+                            <h2>Start with the Android build.</h2>
+                            <p>
+                                Android is available now. A web version is planned next, and iOS may follow after that.
+                            </p>
+                        </div>
+
+                        <div class="release-actions">
+                            <a class="button primary" href="{{ url_for('main.download_apk') }}" download>
+                                Download for Android
+                            </a>
+                            <div class="availability-note">Web version available soon</div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script>
+        const downloadButton = document.getElementById("download-button");
+        const downloadFeedback = document.getElementById("download-feedback");
+        const showcase = document.getElementById("showcase");
+        const demoSurface = document.getElementById("demo-surface");
+        const demoTitle = document.getElementById("demo-title");
+        const demoText = document.getElementById("demo-text");
+        const demoTabs = Array.from(document.querySelectorAll(".demo-tab"));
+        const demoRows = Array.from(document.querySelectorAll(".demo-row"));
+
+        const demoModes = {
+            posts: {
+                title: "Posting stays simple.",
+                text: "Share updates without digging through busy menus.",
+                row: "posts"
+            },
+            chat: {
+                title: "Messages stay close.",
+                text: "Direct chat feels quick and easy to follow.",
+                row: "chat"
+            },
+            groups: {
+                title: "Groups stay focused.",
+                text: "Keep smaller communities active.",
+                row: "groups"
+            }
+        };
+
+        if (downloadButton && downloadFeedback) {
+            const defaultMessage = downloadFeedback.textContent;
+
+            downloadButton.addEventListener("click", function () {
+                downloadFeedback.textContent = "Preparing your latest Dino Social Android release...";
+
+                window.setTimeout(function () {
+                    downloadFeedback.textContent = defaultMessage;
+                }, 2200);
+            });
+        }
+
+        function setDemoMode(mode) {
+            const nextMode = demoModes[mode];
+
+            if (!nextMode || !demoTitle || !demoText) {
+                return;
+            }
+
+            demoTitle.textContent = nextMode.title;
+            demoText.textContent = nextMode.text;
+
+            demoTabs.forEach(function (tab) {
+                tab.classList.toggle("active", tab.dataset.mode === mode);
+            });
+
+            demoRows.forEach(function (row) {
+                row.classList.toggle("active", row.dataset.row === nextMode.row);
+            });
+        }
+
+        demoTabs.forEach(function (tab) {
+            tab.addEventListener("click", function () {
+                setDemoMode(tab.dataset.mode);
+            });
+        });
+
+        if (showcase && demoSurface) {
+            showcase.addEventListener("pointermove", function (event) {
+                const bounds = showcase.getBoundingClientRect();
+                const offsetX = event.clientX - bounds.left;
+                const offsetY = event.clientY - bounds.top;
+                const percentX = (offsetX / bounds.width) - 0.5;
+                const percentY = (offsetY / bounds.height) - 0.5;
+
+                showcase.style.setProperty("--rotate-x", `${percentY * -8}deg`);
+                showcase.style.setProperty("--rotate-y", `${percentX * 10}deg`);
+                showcase.style.setProperty("--shift-x", `${percentX * 24}px`);
+                showcase.style.setProperty("--shift-y", `${percentY * 20}px`);
+            });
+
+            showcase.addEventListener("pointerleave", function () {
+                showcase.style.setProperty("--rotate-x", "0deg");
+                showcase.style.setProperty("--rotate-y", "0deg");
+                showcase.style.setProperty("--shift-x", "0px");
+                showcase.style.setProperty("--shift-y", "0px");
+            });
+        }
+    </script>
 </body>
 </html>

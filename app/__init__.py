@@ -26,6 +26,7 @@ from app.routes.group_routes import group_bp
 
 import app.models.activity_notification_model  # noqa: F401 – register model with SQLAlchemy
 import app.models.group_model  # noqa: F401 – register model with SQLAlchemy
+import app.models.pending_registration_model  # noqa: F401 – register model with SQLAlchemy
 
 
 def create_app():

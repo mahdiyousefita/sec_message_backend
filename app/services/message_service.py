@@ -255,6 +255,7 @@ def send_message(sender, recipient, message, encrypted_key, attachment=None, mes
         encrypted_reply_key=encrypted_reply_key,
     )
     message_repository.push_message_payload(recipient, payload)
+    message_repository.store_private_message_metadata(payload, recipient)
     message_repository.record_conversation_timestamp(
         sender, recipient, payload.get("timestamp")
     )
@@ -270,5 +271,75 @@ def peek_messages(username):
     return message_repository.peek_messages(username)
 
 
+def peek_messages_batch(username, limit=100):
+    return message_repository.peek_messages_batch(username, limit=limit)
+
+
+def get_pending_count(username):
+    return message_repository.get_pending_count(username)
+
+
+def peek_group_messages_for_user(username, group_id, limit=100):
+    return message_repository.peek_group_messages_batch_for_user(
+        username, group_id, limit=limit
+    )
+
+
+def get_group_pending_count(username, group_id):
+    return message_repository.get_group_pending_count(username, group_id)
+
+
 def ack_messages(username, message_ids):
     return message_repository.ack_messages(username, message_ids)
+
+
+def get_message_metadata(message_id):
+    return message_repository.get_message_metadata(message_id)
+
+
+def delete_message_metadata(message_id):
+    return message_repository.delete_message_metadata(message_id)
+
+
+def queue_message_deletion_event(username, event_name, payload):
+    return message_repository.queue_message_deletion_event(username, event_name, payload)
+
+
+def pop_message_deletion_events(username):
+    return message_repository.pop_message_deletion_events(username)
+
+
+def store_group_message_metadata(payload, group_id):
+    return message_repository.store_group_message_metadata(payload, group_id)
+
+
+def mark_private_message_seen(sender, recipient, message_id):
+    return message_repository.mark_private_message_seen(sender, recipient, message_id)
+
+
+def get_private_seen_message_ids(sender, recipient, message_ids):
+    return message_repository.get_private_seen_message_ids(sender, recipient, message_ids)
+
+
+def mark_group_message_seen(group_id, message_id):
+    return message_repository.mark_group_message_seen(group_id, message_id)
+
+
+def get_group_seen_message_ids(group_id, message_ids):
+    return message_repository.get_group_seen_message_ids(group_id, message_ids)
+
+
+def mark_private_message_deleted(username, chat_id, message_id):
+    return message_repository.mark_private_message_deleted(username, chat_id, message_id)
+
+
+def get_private_deleted_message_ids(username, chat_id, message_ids):
+    return message_repository.get_private_deleted_message_ids(username, chat_id, message_ids)
+
+
+def mark_group_message_deleted(username, group_id, message_id):
+    return message_repository.mark_group_message_deleted(username, group_id, message_id)
+
+
+def get_group_deleted_message_ids(username, group_id, message_ids):
+    return message_repository.get_group_deleted_message_ids(username, group_id, message_ids)

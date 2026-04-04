@@ -79,6 +79,46 @@ POST /api/auth/register
   {"error": "Name must be a non-empty string"}
   {"error": "Username already exists"}
 
+POST /api/auth/register/start
+- Description: Start a two-step registration flow. No account is created yet.
+- Auth: No
+- Content-Type: application/json
+- Request JSON:
+  {
+    "username": "alice",
+    "password": "pass123",
+    "public_key": "-----BEGIN PUBLIC KEY-----...",
+    "name": "Alice",
+    "client_nonce": "optional-stable-idempotency-token"
+  }
+- Success: 202
+  {
+    "message": "Registration pending confirmation",
+    "registration_id": "<opaque-id>",
+    "expires_in_seconds": 1800
+  }
+- Errors:
+  400 {"error": "Missing fields"}
+  400 {"error": "Name must be a non-empty string"}
+  400 {"error": "client_nonce must be a non-empty string"}
+  409 {"error": "Username already exists"}
+
+POST /api/auth/register/confirm
+- Description: Complete the two-step registration and create the account.
+- Auth: No
+- Content-Type: application/json
+- Request JSON:
+  {
+    "registration_id": "<opaque-id>"
+  }
+- Success: 201
+  {"message": "User registered"}
+- Errors:
+  400 {"error": "Missing registration_id"}
+  404 {"error": "Registration session not found"}
+  410 {"error": "Registration session expired"}
+  409 {"error": "Username already exists"}
+
 POST /api/auth/login
 - Description: Login user and return tokens.
 - Auth: No

@@ -4,6 +4,10 @@ from datetime import datetime, timezone
 from app.extensions.redis_client import redis_client
 
 INBOX_TTL_SECONDS = 24 * 60 * 60
+MESSAGE_META_TTL_SECONDS = 7 * 24 * 60 * 60
+MESSAGE_DELETE_EVENT_TTL_SECONDS = 7 * 24 * 60 * 60
+MESSAGE_SEEN_TTL_SECONDS = 7 * 24 * 60 * 60
+MESSAGE_DELETED_TTL_SECONDS = 7 * 24 * 60 * 60
 
 _ACK_BY_IDS_LUA = """
 local key = KEYS[1]
@@ -88,6 +92,18 @@ def peek_messages(username):
     return [json.loads(msg) for msg in messages]
 
 
+def peek_messages_batch(username, limit=100):
+    key = f"inbox:{username}"
+    safe_limit = max(1, int(limit or 1))
+    messages = redis_client.lrange(key, 0, safe_limit - 1)
+    return [json.loads(msg) for msg in messages]
+
+
+def get_pending_count(username):
+    key = f"inbox:{username}"
+    return redis_client.llen(key)
+
+
 def ack_messages(username, message_ids):
     if not message_ids:
         return 0
@@ -95,6 +111,165 @@ def ack_messages(username, message_ids):
     return redis_client.eval(
         _ACK_BY_IDS_LUA, 1, key, str(INBOX_TTL_SECONDS), *message_ids
     )
+
+
+def store_private_message_metadata(payload, recipient):
+    message_id = (payload or {}).get("message_id")
+    if not message_id:
+        return
+
+    meta = {
+        "type": "private",
+        "message_id": message_id,
+        "sender": payload.get("from"),
+        "recipient": recipient,
+        "timestamp": payload.get("timestamp"),
+    }
+    key = f"message_meta:{message_id}"
+    redis_client.setex(key, MESSAGE_META_TTL_SECONDS, json.dumps(meta))
+
+
+def get_message_metadata(message_id):
+    if not message_id:
+        return None
+    raw = redis_client.get(f"message_meta:{message_id}")
+    if not raw:
+        return None
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8")
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def delete_message_metadata(message_id):
+    if not message_id:
+        return
+    redis_client.delete(f"message_meta:{message_id}")
+
+
+def mark_private_message_seen(sender, recipient, message_id):
+    if not sender or not recipient or not message_id:
+        return
+    key = f"private_seen:{sender}:{recipient}"
+    pipe = redis_client.pipeline()
+    pipe.sadd(key, message_id)
+    pipe.expire(key, MESSAGE_SEEN_TTL_SECONDS)
+    pipe.execute()
+
+
+def get_private_seen_message_ids(sender, recipient, message_ids):
+    if not sender or not recipient or not message_ids:
+        return []
+    key = f"private_seen:{sender}:{recipient}"
+    seen_ids = []
+    for message_id in message_ids:
+        if not message_id:
+            continue
+        if redis_client.sismember(key, message_id):
+            seen_ids.append(message_id)
+    return seen_ids
+
+
+def mark_group_message_seen(group_id, message_id):
+    if not group_id or not message_id:
+        return
+    key = f"group_seen:{group_id}"
+    pipe = redis_client.pipeline()
+    pipe.sadd(key, message_id)
+    pipe.expire(key, MESSAGE_SEEN_TTL_SECONDS)
+    pipe.execute()
+
+
+def get_group_seen_message_ids(group_id, message_ids):
+    if not group_id or not message_ids:
+        return []
+    key = f"group_seen:{group_id}"
+    seen_ids = []
+    for message_id in message_ids:
+        if not message_id:
+            continue
+        if redis_client.sismember(key, message_id):
+            seen_ids.append(message_id)
+    return seen_ids
+
+
+def mark_private_message_deleted(username, chat_id, message_id):
+    if not username or not chat_id or not message_id:
+        return
+    key = f"private_deleted:{username}:{chat_id}"
+    pipe = redis_client.pipeline()
+    pipe.sadd(key, message_id)
+    pipe.expire(key, MESSAGE_DELETED_TTL_SECONDS)
+    pipe.execute()
+
+
+def get_private_deleted_message_ids(username, chat_id, message_ids):
+    if not username or not chat_id or not message_ids:
+        return []
+    key = f"private_deleted:{username}:{chat_id}"
+    deleted_ids = []
+    for message_id in message_ids:
+        if not message_id:
+            continue
+        if redis_client.sismember(key, message_id):
+            deleted_ids.append(message_id)
+    return deleted_ids
+
+
+def mark_group_message_deleted(username, group_id, message_id):
+    if not username or not group_id or not message_id:
+        return
+    key = f"group_deleted:{username}:{group_id}"
+    pipe = redis_client.pipeline()
+    pipe.sadd(key, message_id)
+    pipe.expire(key, MESSAGE_DELETED_TTL_SECONDS)
+    pipe.execute()
+
+
+def get_group_deleted_message_ids(username, group_id, message_ids):
+    if not username or not group_id or not message_ids:
+        return []
+    key = f"group_deleted:{username}:{group_id}"
+    deleted_ids = []
+    for message_id in message_ids:
+        if not message_id:
+            continue
+        if redis_client.sismember(key, message_id):
+            deleted_ids.append(message_id)
+    return deleted_ids
+
+
+def queue_message_deletion_event(username, event_name, payload):
+    if not username or not event_name or not isinstance(payload, dict):
+        return
+    key = f"message_delete_events:{username}"
+    event = json.dumps({"event": event_name, "payload": payload})
+    pipe = redis_client.pipeline()
+    pipe.rpush(key, event)
+    pipe.expire(key, MESSAGE_DELETE_EVENT_TTL_SECONDS)
+    pipe.execute()
+
+
+def pop_message_deletion_events(username):
+    if not username:
+        return []
+    key = f"message_delete_events:{username}"
+    raw_events = redis_client.lrange(key, 0, -1)
+    redis_client.delete(key)
+
+    events = []
+    for raw in raw_events:
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(parsed, dict):
+            events.append(parsed)
+    return events
 
 def record_conversation_timestamp(user_a, user_b, iso_timestamp=None):
     if iso_timestamp is None:
@@ -165,6 +340,18 @@ def peek_group_messages_for_user(username, group_id):
     return [json.loads(msg) for msg in raw]
 
 
+def peek_group_messages_batch_for_user(username, group_id, limit=100):
+    key = f"group_user_inbox:{username}:{group_id}"
+    safe_limit = max(1, int(limit or 1))
+    raw = redis_client.lrange(key, 0, safe_limit - 1)
+    return [json.loads(msg) for msg in raw]
+
+
+def get_group_pending_count(username, group_id):
+    key = f"group_user_inbox:{username}:{group_id}"
+    return redis_client.llen(key)
+
+
 _ACK_GROUP_BY_IDS_LUA = """
 local key = KEYS[1]
 local ttl  = tonumber(ARGV[1]) or 86400
@@ -197,6 +384,21 @@ def ack_group_messages(username, group_id, message_ids):
         _ACK_GROUP_BY_IDS_LUA, 1, key,
         str(GROUP_INBOX_TTL_SECONDS), *message_ids
     )
+
+
+def store_group_message_metadata(payload, group_id):
+    message_id = (payload or {}).get("message_id")
+    if not message_id:
+        return
+    meta = {
+        "type": "group",
+        "message_id": message_id,
+        "sender": payload.get("from"),
+        "group_id": int(group_id),
+        "timestamp": payload.get("timestamp"),
+    }
+    key = f"message_meta:{message_id}"
+    redis_client.setex(key, MESSAGE_META_TTL_SECONDS, json.dumps(meta))
 
 
 

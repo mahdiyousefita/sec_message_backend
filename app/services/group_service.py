@@ -1,7 +1,7 @@
 from flask import current_app, has_request_context, request
 
 from app.models.group_model import Group
-from app.repositories import user_repository, group_repository
+from app.repositories import user_repository, group_repository, message_repository
 from app.repositories.follow_repository import is_following
 
 
@@ -160,7 +160,47 @@ def get_user_groups(username: str):
         raise ValueError("User not found")
 
     groups = group_repository.get_groups_for_user(user.id)
-    return [_format_group(g) for g in groups]
+    result = []
+    for group in groups:
+        formatted = _format_group(group)
+        unread_count = message_repository.get_group_pending_count(username, group.id)
+        formatted["has_unread"] = unread_count > 0
+        formatted["unread_count"] = unread_count
+        result.append(formatted)
+    return result
+
+
+def get_group_unread_summary(username: str):
+    user = user_repository.get_by_username(username)
+    if not user:
+        raise ValueError("User not found")
+
+    groups = group_repository.get_groups_for_user(user.id)
+    unread_groups = []
+    total = 0
+
+    for group in groups:
+        pending = message_repository.peek_group_messages_for_user(username, group.id)
+        if not pending:
+            continue
+
+        total += len(pending)
+        latest = pending[-1]
+        unread_groups.append(
+            {
+                "group_id": group.id,
+                "group_name": group.name,
+                "count": len(pending),
+                "last_type": latest.get("type", "text"),
+                "last_timestamp": latest.get("timestamp", ""),
+                "last_sender": latest.get("from", "Someone"),
+            }
+        )
+
+    return {
+        "total": total,
+        "groups": unread_groups,
+    }
 
 
 def get_group_detail(username: str, group_id: int):
@@ -191,13 +231,21 @@ def get_group_detail(username: str, group_id: int):
     return formatted
 
 
-def add_member_to_group(requester_username: str, group_id: int, target_username: str):
+def get_group_members(username: str, group_id: int):
+    group = get_group_detail(username, group_id)
+    return {
+        "group_id": group["id"],
+        "group_name": group["name"],
+        "member_count": group["member_count"],
+        "can_manage_members": group["creator"]["username"] == username,
+        "members": group["members"],
+    }
+
+
+def add_members_to_group(requester_username: str, group_id: int, target_usernames: list[str]):
     requester = user_repository.get_by_username(requester_username)
-    target = user_repository.get_by_username(target_username)
     if not requester:
         raise ValueError("User not found")
-    if not target:
-        raise ValueError("Target user not found")
 
     group = group_repository.get_group_by_id(group_id)
     if not group:
@@ -206,13 +254,72 @@ def add_member_to_group(requester_username: str, group_id: int, target_username:
     if group.creator_id != requester.id:
         raise NotGroupCreatorError("Only the group creator can add members")
 
-    creator_follows = is_following(requester.id, target.id)
-    target_follows = is_following(target.id, requester.id)
-    if not (creator_follows and target_follows):
-        raise NotMutualFollowError("You can only add users who mutually follow you")
+    if not isinstance(target_usernames, list):
+        raise ValueError("usernames must be a list")
 
-    added = group_repository.add_member(group_id, target.id)
-    if not added:
+    normalized_usernames: list[str] = []
+    seen = set()
+    for raw_username in target_usernames:
+        if not isinstance(raw_username, str):
+            continue
+        normalized = raw_username.strip()
+        if (
+            not normalized
+            or normalized == requester_username
+            or normalized in seen
+        ):
+            continue
+        seen.add(normalized)
+        normalized_usernames.append(normalized)
+
+    if not normalized_usernames:
+        raise ValueError("At least one valid username is required")
+
+    valid_targets = []
+    invalid_usernames = []
+    not_mutual = []
+
+    for username in normalized_usernames:
+        target = user_repository.get_by_username(username)
+        if not target:
+            invalid_usernames.append(username)
+            continue
+
+        creator_follows = is_following(requester.id, target.id)
+        target_follows = is_following(target.id, requester.id)
+        if not (creator_follows and target_follows):
+            not_mutual.append(username)
+            continue
+
+        valid_targets.append(target)
+
+    if invalid_usernames:
+        raise ValueError(f"Users not found: {', '.join(invalid_usernames)}")
+
+    if not_mutual:
+        raise NotMutualFollowError(
+            f"Mutual follow required for: {', '.join(not_mutual)}"
+        )
+
+    added_usernames = []
+    already_member_usernames = []
+
+    for target in valid_targets:
+        added = group_repository.add_member(group_id, target.id)
+        if added:
+            added_usernames.append(target.username)
+        else:
+            already_member_usernames.append(target.username)
+
+    return {
+        "added": added_usernames,
+        "already_members": already_member_usernames,
+    }
+
+
+def add_member_to_group(requester_username: str, group_id: int, target_username: str):
+    result = add_members_to_group(requester_username, group_id, [target_username])
+    if not result["added"]:
         raise ValueError("User is already a member of this group")
 
     return True
