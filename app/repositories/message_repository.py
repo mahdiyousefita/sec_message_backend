@@ -143,6 +143,38 @@ def get_message_metadata(message_id):
         return None
 
 
+def get_message_metadata_bulk(message_ids):
+    if not message_ids:
+        return {}
+
+    normalized_ids = [
+        message_id for message_id in message_ids
+        if isinstance(message_id, str) and message_id
+    ]
+    if not normalized_ids:
+        return {}
+
+    pipe = redis_client.pipeline()
+    for message_id in normalized_ids:
+        pipe.get(f"message_meta:{message_id}")
+
+    raw_values = pipe.execute()
+    metadata_by_id = {}
+    for message_id, raw in zip(normalized_ids, raw_values):
+        if not raw:
+            continue
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(parsed, dict):
+            metadata_by_id[message_id] = parsed
+
+    return metadata_by_id
+
+
 def delete_message_metadata(message_id):
     if not message_id:
         return

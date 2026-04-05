@@ -304,6 +304,10 @@ def get_message_metadata(message_id):
     return message_repository.get_message_metadata(message_id)
 
 
+def get_message_metadata_bulk(message_ids):
+    return message_repository.get_message_metadata_bulk(message_ids)
+
+
 def delete_message_metadata(message_id):
     return message_repository.delete_message_metadata(message_id)
 
