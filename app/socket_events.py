@@ -311,23 +311,13 @@ def register_socket_events():
             emit("message_error", {"error": "message_ids must contain valid ids"})
             return
 
-        pending_messages = message_service.peek_messages(username)
-        pending_by_id = {}
-        requested_ids = set(normalized_message_ids)
-        for payload in pending_messages:
-            if not isinstance(payload, dict):
-                continue
-            message_id = payload.get("message_id")
-            if message_id in requested_ids:
-                pending_by_id[message_id] = payload
+        metadata_by_id = message_service.get_message_metadata_bulk(normalized_message_ids)
 
         removed = message_service.ack_messages(username, normalized_message_ids)
         seen_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         for message_id in normalized_message_ids:
-            payload = pending_by_id.get(message_id)
-            if not payload:
-                continue
-            sender = payload.get("from")
+            metadata = metadata_by_id.get(message_id)
+            sender = metadata.get("sender") if metadata else None
             if not sender or sender == username:
                 continue
             message_service.mark_private_message_seen(sender, username, message_id)
@@ -580,23 +570,13 @@ def register_socket_events():
             emit("message_error", {"error": "message_ids must contain valid ids"})
             return
 
-        pending_messages = message_repository.peek_group_messages_for_user(username, group_id)
-        pending_by_id = {}
-        requested_ids = set(normalized_message_ids)
-        for payload in pending_messages:
-            if not isinstance(payload, dict):
-                continue
-            message_id = payload.get("message_id")
-            if message_id in requested_ids:
-                pending_by_id[message_id] = payload
+        metadata_by_id = message_repository.get_message_metadata_bulk(normalized_message_ids)
 
         removed = message_repository.ack_group_messages(username, group_id, normalized_message_ids)
         seen_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         for message_id in normalized_message_ids:
-            payload = pending_by_id.get(message_id)
-            if not payload:
-                continue
-            sender = payload.get("from")
+            metadata = metadata_by_id.get(message_id)
+            sender = metadata.get("sender") if metadata else None
             if not sender or sender == username:
                 continue
             message_service.mark_group_message_seen(group_id, message_id)

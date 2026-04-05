@@ -40,7 +40,8 @@ def get_contacts_with_message_status(username, page=1, limit=DEFAULT_CONTACTS_LI
         limit = MAX_CONTACTS_LIMIT
 
     followed_contacts = follow_service.get_following_for_username(username)
-    pending_senders = notification_service.pending_message_senders(username)
+    unread_summary = notification_service.get_unread_summary_map(username)
+    pending_senders = set(unread_summary["per_sender"].keys())
 
     all_contact_set = set(followed_contacts) | pending_senders
 
@@ -89,12 +90,15 @@ def get_contacts_with_message_status(username, page=1, limit=DEFAULT_CONTACTS_LI
 
     result = []
     for contact_username in page_usernames:
-        has_message = contact_username in pending_senders
+        sender_summary = unread_summary["per_sender"].get(contact_username)
+        has_message = sender_summary is not None
         last_message = None
-        if has_message:
-            last_message = notification_service.get_last_message_preview(
-                username, contact_username
-            )
+        if sender_summary:
+            last_message = {
+                "from": sender_summary.get("sender"),
+                "type": sender_summary.get("last_type", "text"),
+                "timestamp": sender_summary.get("last_timestamp", ""),
+            }
 
         user = user_by_username.get(contact_username)
         profile = profile_by_user_id.get(user.id) if user else None
