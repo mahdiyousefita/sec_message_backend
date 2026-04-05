@@ -7,7 +7,7 @@ from flask_jwt_extended import (
     get_jwt_identity,
     verify_jwt_in_request,
 )
-from werkzeug.security import check_password_hash
+from werkzeug.security import check_password_hash, generate_password_hash
 
 from app.db import db
 from app.models.user_model import User
@@ -18,6 +18,7 @@ from app.models.profile_model import Profile
 from app.models.media_model import Media
 from app.models.vote_model import Vote
 from app.models.follow_model import Follow
+from app.services import report_service
 
 admin_bp = Blueprint(
     "admin",
@@ -157,9 +158,77 @@ def admin_search_posts():
             "text": p.text,
             "author": author.username if author else f"user-{p.author_id}",
             "created_at": p.created_at.isoformat(),
+            "is_hidden": bool(getattr(p, "is_hidden", False)),
         })
 
     return jsonify({"posts": result, "total": total, "page": page, "limit": limit}), 200
+
+
+# ── Reports ──────────────────────────────────────────────────────────
+
+@admin_bp.route("/api/reports", methods=["GET"])
+@admin_required
+def admin_list_reports():
+    page = max(1, request.args.get("page", 1, type=int))
+    limit = min(50, max(1, request.args.get("limit", 20, type=int)))
+    status = request.args.get("status")
+    report_type = request.args.get("report_type")
+
+    try:
+        data = report_service.list_reports_for_admin(
+            page=page,
+            limit=limit,
+            status=status,
+            report_type=report_type,
+        )
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+    return jsonify(data), 200
+
+
+@admin_bp.route("/api/reports/<int:report_id>", methods=["GET"])
+@admin_required
+def admin_get_report(report_id):
+    try:
+        payload = report_service.get_report_detail_for_admin(report_id)
+    except ValueError as e:
+        if str(e) == "Report not found":
+            return jsonify({"error": str(e)}), 404
+        return jsonify({"error": str(e)}), 400
+
+    return jsonify({"report": payload}), 200
+
+
+@admin_bp.route("/api/reports/<int:report_id>/handle", methods=["POST"])
+@admin_required
+def admin_handle_report(report_id):
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "Invalid JSON body"}), 400
+
+    admin_username = get_jwt_identity()
+
+    try:
+        report_service.handle_report_by_admin(
+            report_id=report_id,
+            admin_username=admin_username,
+            decision=data.get("decision"),
+            admin_note=data.get("admin_note"),
+        )
+        report_payload = report_service.get_report_detail_for_admin(report_id)
+    except ValueError as e:
+        message = str(e)
+        if message in {"Report not found", "Post not found", "User not found"}:
+            return jsonify({"error": message}), 404
+        return jsonify({"error": message}), 400
+
+    return jsonify(
+        {
+            "message": "Report handled",
+            "report": report_payload,
+        }
+    ), 200
 
 
 # ── Post detail + comments ──────────────────────────────────────────
@@ -312,3 +381,70 @@ def admin_demote_user(user_id):
     AdminUser.query.filter_by(user_id=user.id).delete()
     db.session.commit()
     return jsonify({"message": f"{user.username} is no longer an admin"}), 200
+
+
+# ── Update user credentials ─────────────────────────────────────────
+
+@admin_bp.route("/api/users/<int:user_id>/credentials", methods=["PATCH"])
+@admin_required
+def admin_update_user_credentials(user_id):
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "Invalid JSON body"}), 400
+
+    incoming_username = data.get("username")
+    incoming_password = data.get("password")
+
+    if incoming_username is None and incoming_password is None:
+        return jsonify({"error": "At least one field (username or password) is required"}), 400
+
+    changed_fields = []
+
+    if incoming_username is not None:
+        if not isinstance(incoming_username, str) or not incoming_username.strip():
+            return jsonify({"error": "Username must be a non-empty string"}), 400
+
+        new_username = incoming_username.strip()
+        existing = User.query.filter_by(username=new_username).first()
+        if existing and existing.id != user.id:
+            return jsonify({"error": "Username already exists"}), 409
+
+        if user.username != new_username:
+            user.username = new_username
+            changed_fields.append("username")
+
+    if incoming_password is not None:
+        if not isinstance(incoming_password, str) or not incoming_password.strip():
+            return jsonify({"error": "Password must be a non-empty string"}), 400
+
+        user.password_hash = generate_password_hash(incoming_password)
+        changed_fields.append("password")
+
+    if not changed_fields:
+        return jsonify(
+            {
+                "message": "No changes applied",
+                "user": {
+                    "id": user.id,
+                    "username": user.username,
+                },
+                "changed_fields": [],
+            }
+        ), 200
+
+    db.session.commit()
+
+    return jsonify(
+        {
+            "message": "User credentials updated",
+            "user": {
+                "id": user.id,
+                "username": user.username,
+            },
+            "changed_fields": changed_fields,
+        }
+    ), 200

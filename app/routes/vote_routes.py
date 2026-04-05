@@ -32,4 +32,9 @@ def vote_route():
         return jsonify({"message": "Vote recorded"}), 200
 
     except ValueError as e:
-        return jsonify({"error": str(e)}), 400
+        message = str(e)
+        if message in {"Post not found", "Comment not found"}:
+            return jsonify({"error": message}), 404
+        if message == "Account suspended":
+            return jsonify({"error": message}), 403
+        return jsonify({"error": message}), 400

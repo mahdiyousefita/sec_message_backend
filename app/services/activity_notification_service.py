@@ -5,10 +5,10 @@ from flask import current_app, has_request_context, request
 
 from app.db import db
 from app.models.comment_model import Comment
-from app.models.post_model import Post
 from app.models.user_model import User
 from app.models.profile_model import Profile
 from app.repositories import user_repository
+from app.services import report_service
 from app.repositories.activity_notification_repository import (
     create_notification,
     get_notifications_page,
@@ -171,7 +171,7 @@ def notify_comment(
     if not actor:
         return
 
-    post = Post.query.get(post_id)
+    post = report_service.get_visible_post(post_id)
     if not post:
         return
 
@@ -244,7 +244,7 @@ def notify_vote(actor_username, target_type, target_id, value):
         return
 
     if target_type == "post":
-        post = Post.query.get(target_id)
+        post = report_service.get_visible_post(target_id)
         if not post or post.author_id == actor.id:
             return
         recipient = User.query.get(post.author_id)

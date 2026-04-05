@@ -11,6 +11,7 @@ from app.models.vote_model import Vote
 from app.repositories.post_repository import create_post_by_username
 from app.repositories.media_repository import add_media
 from app.repositories import user_repository
+from app.services import block_service
 from app.db import db
 
 
@@ -106,7 +107,7 @@ def _viewer_user_id(viewer_username: str | None) -> int | None:
         return None
 
     viewer_user = user_repository.get_by_username(viewer_username)
-    if not viewer_user:
+    if not viewer_user or getattr(viewer_user, "is_suspended", False):
         return None
 
     return viewer_user.id
@@ -359,11 +360,20 @@ def get_posts(page: int, limit: int, viewer_username: str | None = None):
     if limit > 50:
         limit = 50
 
+    hidden_user_ids = block_service.hidden_user_ids_for_viewer(viewer_username)
+
     query = (
         Post.query
+        .join(User, User.id == Post.author_id)
+        .filter(
+            Post.is_hidden.is_(False),
+            User.is_suspended.is_(False),
+        )
         .options(joinedload(Post.media))
         .order_by(Post.created_at.desc())
     )
+    if hidden_user_ids:
+        query = query.filter(~Post.author_id.in_(hidden_user_ids))
 
     total = query.count()
     posts = query.offset((page - 1) * limit).limit(limit).all()
@@ -396,8 +406,12 @@ def get_posts_by_username(
     viewer_username: str | None = None,
 ):
     user = user_repository.get_by_username(username)
-    if not user:
+    if not user or getattr(user, "is_suspended", False):
         raise ValueError("User not found")
+    if viewer_username and viewer_username != username:
+        viewer = user_repository.get_by_username(viewer_username)
+        if viewer and block_service.user_ids_have_block_relation(viewer.id, user.id):
+            raise ValueError("User not found")
 
     if limit > 50:
         limit = 50
@@ -405,6 +419,7 @@ def get_posts_by_username(
     query = (
         Post.query
         .filter(Post.author_id == user.id)
+        .filter(Post.is_hidden.is_(False))
         .options(joinedload(Post.media))
         .order_by(Post.created_at.desc())
     )

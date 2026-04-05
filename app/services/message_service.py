@@ -5,7 +5,7 @@ import uuid
 from flask import current_app, has_request_context, request
 
 from app.extensions.minio_client import get_minio_client
-from app.repositories import user_repository, message_repository
+from app.repositories import block_repository, message_repository, user_repository
 
 
 ALLOWED_IMAGE_MIME_TYPES = {
@@ -222,8 +222,15 @@ def send_message(sender, recipient, message, encrypted_key, attachment=None, mes
                 reply_to_message_id=None, reply_to_sender=None,
                  encrypted_reply_preview=None,
                  encrypted_reply_key=None):
-    if not user_repository.get_by_username(recipient):
+    sender_user = user_repository.get_by_username(sender)
+    recipient_user = user_repository.get_by_username(recipient)
+
+    if not sender_user:
+        raise ValueError("Sender not found")
+    if not recipient_user:
         raise ValueError("Recipient not found")
+    if block_repository.has_block_relation(sender_user.id, recipient_user.id):
+        raise PermissionError("Messaging is unavailable because one of you has blocked the other")
 
     if not encrypted_key:
         raise ValueError("Encrypted key is required")

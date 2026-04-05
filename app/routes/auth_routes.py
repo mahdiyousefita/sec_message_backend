@@ -85,6 +85,11 @@ def login():
     except ValueError as e:
         return _auth_error_response(e, fallback_status_code=401)
 
+@auth_bp.route("/logout", methods=["POST"])
+@jwt_required(optional=True)
+def logout():
+    # Tokens are stateless JWTs; backend acknowledges logout and client clears local/session state.
+    return jsonify({"message": "Logged out"}), 200
 
 @auth_bp.route("/refresh", methods=["POST"])
 @auth_bp.route("/token", methods=["POST"])

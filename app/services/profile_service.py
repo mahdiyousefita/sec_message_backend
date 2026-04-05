@@ -10,6 +10,7 @@ from app.models.post_model import Post
 from app.repositories import profile_video_repository, user_repository
 from app.repositories.follow_repository import count_followers, count_following
 from app.repositories.profile_repository import create_profile_for_user, get_by_user_id
+from app.services import block_service
 from app.services.post_service import _get_mp4_duration_seconds, get_posts_by_username
 
 
@@ -129,14 +130,21 @@ def _serialize_profile(user, profile):
         "profile_video_url": _build_profile_media_url(video_object_name),
         "followers_count": count_followers(user.id),
         "following_count": count_following(user.id),
-        "posts_count": Post.query.filter_by(author_id=user.id).count(),
+        "posts_count": Post.query.filter_by(author_id=user.id, is_hidden=False).count(),
     }
 
 
-def get_profile_by_username(username: str):
+def get_profile_by_username(
+    username: str,
+    viewer_username: str | None = None,
+):
     user = user_repository.get_by_username(username)
-    if not user:
+    if not user or getattr(user, "is_suspended", False):
         raise ValueError("User not found")
+    if viewer_username and viewer_username != username:
+        viewer = user_repository.get_by_username(viewer_username)
+        if viewer and block_service.user_ids_have_block_relation(viewer.id, user.id):
+            raise ValueError("User not found")
 
     profile = _get_or_create_profile(user)
     return _serialize_profile(user, profile)
@@ -150,7 +158,7 @@ def update_profile(
     profile_video=None,
 ):
     user = user_repository.get_by_username(username)
-    if not user:
+    if not user or getattr(user, "is_suspended", False):
         raise ValueError("User not found")
 
     profile = _get_or_create_profile(user)

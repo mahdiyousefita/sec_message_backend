@@ -12,7 +12,12 @@ profile_bp = Blueprint("profiles", __name__)
 def get_my_profile():
     username = get_jwt_identity()
     try:
-        return jsonify(profile_service.get_profile_by_username(username)), 200
+        return jsonify(
+            profile_service.get_profile_by_username(
+                username=username,
+                viewer_username=username,
+            )
+        ), 200
     except ValueError as e:
         return jsonify({"error": str(e)}), 404
 
@@ -58,9 +63,16 @@ def update_my_profile():
 
 
 @profile_bp.route("/profiles/<username>", methods=["GET"])
+@jwt_required(optional=True)
 def get_profile(username):
+    viewer_username = get_jwt_identity()
     try:
-        return jsonify(profile_service.get_profile_by_username(username)), 200
+        return jsonify(
+            profile_service.get_profile_by_username(
+                username=username,
+                viewer_username=viewer_username,
+            )
+        ), 200
     except ValueError as e:
         return jsonify({"error": str(e)}), 404
 

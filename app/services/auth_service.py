@@ -176,6 +176,8 @@ def login(username, password):
     user = user_repository.get_by_username(username)
     if not user or not check_password_hash(user.password_hash, password):
         raise AuthError("Invalid credentials", status_code=401)
+    if getattr(user, "is_suspended", False):
+        raise AuthError("Account suspended", status_code=403)
 
     return {
         "access_token": create_access_token(identity=username),
@@ -201,6 +203,8 @@ def rotate_public_key(username, public_key):
     user = user_repository.get_by_username(normalized_username)
     if not user:
         raise AuthError("User not found", status_code=404)
+    if getattr(user, "is_suspended", False):
+        raise AuthError("Account suspended", status_code=403)
 
     if user.public_key != normalized_public_key:
         updated = user_repository.update_public_key(

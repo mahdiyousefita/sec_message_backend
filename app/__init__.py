@@ -1,5 +1,4 @@
 from flask import Flask, jsonify
-from flask_cors import CORS
 from flask_jwt_extended import JWTManager
 
 from app.extensions.extensions import ma, socketio
@@ -23,10 +22,15 @@ from app.routes.follow_routes import follow_bp
 from app.routes.search_routes import search_bp
 from app.routes.admin_routes import admin_bp
 from app.routes.group_routes import group_bp
+from app.routes.report_routes import report_bp
+from app.routes.block_routes import block_bp
+from app.services import report_service
 
 import app.models.activity_notification_model  # noqa: F401 – register model with SQLAlchemy
+import app.models.block_model  # noqa: F401 – register model with SQLAlchemy
 import app.models.group_model  # noqa: F401 – register model with SQLAlchemy
 import app.models.pending_registration_model  # noqa: F401 – register model with SQLAlchemy
+import app.models.report_model  # noqa: F401 – register model with SQLAlchemy
 
 
 def create_app():
@@ -43,17 +47,12 @@ def create_app():
     app.config["JWT_COOKIE_SAMESITE"] = "None"
     app.config["JWT_COOKIE_SECURE"] = True
 
-    CORS(
-        app,
-        resources={r"/*": {"origins": Config.CORS_ALLOWED_ORIGINS}},
-        supports_credentials=True,
-    )
-
     db.init_app(app)
     ma.init_app(app)
     socketio.init_app(
         app,
-        cors_allowed_origins=Config.SOCKETIO_CORS_ALLOWED_ORIGINS,
+        # Reverse proxy is responsible for CORS headers.
+        cors_allowed_origins=[],
         message_queue=Config.SOCKETIO_MESSAGE_QUEUE,
         ping_timeout=Config.SOCKETIO_PING_TIMEOUT,
         ping_interval=Config.SOCKETIO_PING_INTERVAL,
@@ -75,8 +74,18 @@ def create_app():
     app.register_blueprint(profile_bp, url_prefix="/api")
     app.register_blueprint(follow_bp, url_prefix="/api")
     app.register_blueprint(search_bp, url_prefix="/api")
+    app.register_blueprint(report_bp, url_prefix="/api")
+    app.register_blueprint(block_bp, url_prefix="/api")
     app.register_blueprint(admin_bp, url_prefix="/admin")
     app.register_blueprint(group_bp, url_prefix="/api/groups")
+
+    @app.before_request
+    def _run_moderation_cleanup():
+        try:
+            report_service.run_scheduled_cleanup()
+        except Exception:
+            # Cleanup should be best effort and must not break user requests.
+            app.logger.exception("Moderation cleanup failed")
 
     with app.app_context():
         db.create_all()

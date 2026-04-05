@@ -44,11 +44,29 @@ def delete_follow(follower_id: int, following_id: int) -> bool:
 
 
 def count_followers(user_id: int) -> int:
-    return Follow.query.filter_by(following_id=user_id).count()
+    follower_user = aliased(User)
+    return (
+        db.session.query(Follow.id)
+        .join(follower_user, follower_user.id == Follow.follower_id)
+        .filter(
+            Follow.following_id == user_id,
+            follower_user.is_suspended.is_(False),
+        )
+        .count()
+    )
 
 
 def count_following(user_id: int) -> int:
-    return Follow.query.filter_by(follower_id=user_id).count()
+    following_user = aliased(User)
+    return (
+        db.session.query(Follow.id)
+        .join(following_user, following_user.id == Follow.following_id)
+        .filter(
+            Follow.follower_id == user_id,
+            following_user.is_suspended.is_(False),
+        )
+        .count()
+    )
 
 
 def get_following_usernames(follower_id: int):
@@ -56,7 +74,10 @@ def get_following_usernames(follower_id: int):
     rows = (
         db.session.query(following_user.username)
         .join(Follow, Follow.following_id == following_user.id)
-        .filter(Follow.follower_id == follower_id)
+        .filter(
+            Follow.follower_id == follower_id,
+            following_user.is_suspended.is_(False),
+        )
         .order_by(following_user.username.asc())
         .all()
     )
@@ -68,7 +89,10 @@ def get_follower_usernames(following_id: int):
     rows = (
         db.session.query(follower_user.username)
         .join(Follow, Follow.follower_id == follower_user.id)
-        .filter(Follow.following_id == following_id)
+        .filter(
+            Follow.following_id == following_id,
+            follower_user.is_suspended.is_(False),
+        )
         .order_by(follower_user.username.asc())
         .all()
     )
@@ -78,7 +102,15 @@ def get_follower_usernames(following_id: int):
 def get_followers_page(following_id: int, page: int, limit: int):
     follower_user = aliased(User)
 
-    total = Follow.query.filter_by(following_id=following_id).count()
+    total = (
+        db.session.query(Follow.id)
+        .join(follower_user, follower_user.id == Follow.follower_id)
+        .filter(
+            Follow.following_id == following_id,
+            follower_user.is_suspended.is_(False),
+        )
+        .count()
+    )
     rows = (
         db.session.query(
             follower_user.id,
@@ -88,7 +120,10 @@ def get_followers_page(following_id: int, page: int, limit: int):
         )
         .join(Follow, Follow.follower_id == follower_user.id)
         .outerjoin(Profile, Profile.user_id == follower_user.id)
-        .filter(Follow.following_id == following_id)
+        .filter(
+            Follow.following_id == following_id,
+            follower_user.is_suspended.is_(False),
+        )
         .order_by(follower_user.username.asc())
         .offset((page - 1) * limit)
         .limit(limit)
@@ -110,7 +145,15 @@ def get_followers_page(following_id: int, page: int, limit: int):
 def get_following_page(follower_id: int, page: int, limit: int):
     following_user = aliased(User)
 
-    total = Follow.query.filter_by(follower_id=follower_id).count()
+    total = (
+        db.session.query(Follow.id)
+        .join(following_user, following_user.id == Follow.following_id)
+        .filter(
+            Follow.follower_id == follower_id,
+            following_user.is_suspended.is_(False),
+        )
+        .count()
+    )
     rows = (
         db.session.query(
             following_user.id,
@@ -120,7 +163,10 @@ def get_following_page(follower_id: int, page: int, limit: int):
         )
         .join(Follow, Follow.following_id == following_user.id)
         .outerjoin(Profile, Profile.user_id == following_user.id)
-        .filter(Follow.follower_id == follower_id)
+        .filter(
+            Follow.follower_id == follower_id,
+            following_user.is_suspended.is_(False),
+        )
         .order_by(following_user.username.asc())
         .offset((page - 1) * limit)
         .limit(limit)

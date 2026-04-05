@@ -20,6 +20,8 @@ def create_comment(post_id):
     user = User.query.filter_by(username=username).first()
     if not user:
         return jsonify({"error": "User not found"}), 404
+    if getattr(user, "is_suspended", False):
+        return jsonify({"error": "Account suspended"}), 403
 
     try:
         comment = add_comment(
@@ -53,5 +55,9 @@ def list_comments(post_id):
     page = request.args.get("page", default=1, type=int)
     page_size = request.args.get("page_size", default=10, type=int)
 
-    comments = comment_service.get_comments_tree_by_post(post_id, page, page_size)
+    try:
+        comments = comment_service.get_comments_tree_by_post(post_id, page, page_size)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+
     return jsonify(comments), 200

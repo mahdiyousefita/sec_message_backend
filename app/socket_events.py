@@ -239,6 +239,12 @@ def register_socket_events():
         except ValueError as exc:
             emit("message_error", {"error": str(exc)})
             return
+        except PermissionError as exc:
+            emit(
+                "message_error",
+                {"error": str(exc), "code": "blocked"},
+            )
+            return
 
         socketio.emit("new_message", payload, room=recipient)
         logger.debug(

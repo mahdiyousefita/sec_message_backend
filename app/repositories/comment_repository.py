@@ -2,12 +2,13 @@ from sqlalchemy import func
 
 from app.db import db
 from app.models.comment_model import Comment
-from app.models.post_model import Post
 from app.models.vote_model import Vote
 
 
 def create_comment(author_id, post_id, text, parent_id=None):
-    post = Post.query.get(post_id)
+    from app.services import report_service
+
+    post = report_service.get_visible_post(post_id)
     if not post:
         raise ValueError("Post not found")
 
@@ -72,5 +73,3 @@ def get_root_comments_by_post_id(
         .offset(offset)
         .all()
     )
-
-

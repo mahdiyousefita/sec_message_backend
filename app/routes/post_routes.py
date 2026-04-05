@@ -42,6 +42,8 @@ def create_post():
     except MediaStorageError as e:
         return jsonify({"error": str(e)}), 503
     except ValueError as e:
+        if str(e) == "Account suspended":
+            return jsonify({"error": str(e)}), 403
         return jsonify({"error": str(e)}), 400
 
 

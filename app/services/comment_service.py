@@ -68,6 +68,11 @@ def _build_media_url(object_name: str) -> str:
 
 
 def get_comments_tree_by_post(post_id: int, page: int, page_size: int):
+    from app.services import report_service
+
+    if not report_service.get_visible_post(post_id):
+        raise ValueError("Post not found")
+
     raw_comments = get_comments_by_post(post_id)
 
     author_ids = {comment.author_id for comment in raw_comments}

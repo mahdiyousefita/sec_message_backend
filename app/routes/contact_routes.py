@@ -2,6 +2,7 @@ from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from app.services import contact_service
 from app.services import follow_service
+from app.services import block_service
 from app.models.user_model import User
 from app.extensions.redis_client import redis_client as r
 
@@ -54,6 +55,9 @@ def get_contact_public_key(username):
     user = User.query.filter_by(username=username).first()
     if not user:
         return jsonify({"error": "User not found"}), 404
+
+    if block_service.users_have_block_relation(requester, username):
+        return jsonify({"error": "You cannot message this user"}), 403
 
     is_contact = follow_service.is_user_following(requester, username)
     if not is_contact:

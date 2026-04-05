@@ -4,6 +4,7 @@ from app.models.user_model import User
 from app.models.profile_model import Profile
 from app.models.post_model import Post
 from app.models.vote_model import Vote
+from app.services import block_service
 from app.services.post_service import _build_author_maps, _serialize_post
 
 
@@ -27,7 +28,7 @@ def _build_vote_map(posts: list[Post], viewer_username: str | None):
         return {}
 
     viewer_user = User.query.filter_by(username=viewer_username).first()
-    if not viewer_user:
+    if not viewer_user or getattr(viewer_user, "is_suspended", False):
         return {}
 
     post_ids = {post.id for post in posts}
@@ -43,20 +44,29 @@ def _build_vote_map(posts: list[Post], viewer_username: str | None):
     return {vote.target_id: vote.value for vote in votes}
 
 
-def search_users(query: str, page: int, limit: int):
+def search_users(
+    query: str,
+    page: int,
+    limit: int,
+    viewer_username: str | None = None,
+):
     if limit > 50:
         limit = 50
 
     pattern = f"%{query}%"
+    hidden_user_ids = block_service.hidden_user_ids_for_viewer(viewer_username)
 
     base_query = (
         User.query
         .outerjoin(Profile, Profile.user_id == User.id)
+        .filter(User.is_suspended.is_(False))
         .filter(
             (User.username.ilike(pattern)) | (Profile.name.ilike(pattern))
         )
         .order_by(User.id.asc())
     )
+    if hidden_user_ids:
+        base_query = base_query.filter(~User.id.in_(hidden_user_ids))
 
     total = base_query.count()
     users = base_query.offset((page - 1) * limit).limit(limit).all()
@@ -83,13 +93,21 @@ def search_posts(
         limit = 50
 
     pattern = f"%{query}%"
+    hidden_user_ids = block_service.hidden_user_ids_for_viewer(viewer_username)
 
     base_query = (
         Post.query
+        .join(User, User.id == Post.author_id)
         .options(joinedload(Post.media))
+        .filter(
+            Post.is_hidden.is_(False),
+            User.is_suspended.is_(False),
+        )
         .filter(Post.text.ilike(pattern))
         .order_by(Post.created_at.desc())
     )
+    if hidden_user_ids:
+        base_query = base_query.filter(~Post.author_id.in_(hidden_user_ids))
 
     total = base_query.count()
     posts = base_query.offset((page - 1) * limit).limit(limit).all()
@@ -118,7 +136,7 @@ def search_all(
     limit: int,
     viewer_username: str | None = None,
 ):
-    users_result = search_users(query, page, limit)
+    users_result = search_users(query, page, limit, viewer_username=viewer_username)
     posts_result = search_posts(
         query=query,
         page=page,

@@ -3,7 +3,7 @@ import io
 import shutil
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 
@@ -113,6 +113,26 @@ class TestApiRoutes(unittest.TestCase):
             token = self.auth_service.login(username, password)["refresh_token"]
         return {"Authorization": f"Bearer {token}"}
 
+    def _make_admin(self, username):
+        with self.app.app_context():
+            from app.models.admin_model import AdminUser
+            from app.models.user_model import User
+
+            user = User.query.filter_by(username=username).first()
+            self.assertIsNotNone(user)
+            exists = AdminUser.query.filter_by(user_id=user.id).first()
+            if not exists:
+                self.db.session.add(AdminUser(user_id=user.id))
+                self.db.session.commit()
+
+    def _user_id(self, username):
+        with self.app.app_context():
+            from app.models.user_model import User
+
+            user = User.query.filter_by(username=username).first()
+            self.assertIsNotNone(user)
+            return user.id
+
     def test_auth_register_and_login_success(self):
         register_response = self.client.post(
             "/api/auth/register",
@@ -164,6 +184,82 @@ class TestApiRoutes(unittest.TestCase):
 
         response = self.client.post("/api/auth/token", headers=headers)
         self.assertEqual(response.status_code, 422)
+
+    def test_auth_logout_returns_success(self):
+        response = self.client.post("/api/auth/logout")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["message"], "Logged out")
+
+    def test_admin_can_update_user_username_and_password(self):
+        self._register("admin")
+        self._register("alice")
+        self._make_admin("admin")
+        admin_headers = self._auth_header("admin")
+        alice_id = self._user_id("alice")
+
+        response = self.client.patch(
+            f"/admin/api/users/{alice_id}/credentials",
+            headers=admin_headers,
+            json={"username": "alice_new", "password": "newpass123"},
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["message"], "User credentials updated")
+        self.assertEqual(payload["user"]["username"], "alice_new")
+        self.assertIn("username", payload["changed_fields"])
+        self.assertIn("password", payload["changed_fields"])
+
+        old_login = self.client.post(
+            "/api/auth/login",
+            json={"username": "alice", "password": "pass123"},
+        )
+        self.assertEqual(old_login.status_code, 401)
+
+        wrong_password_login = self.client.post(
+            "/api/auth/login",
+            json={"username": "alice_new", "password": "pass123"},
+        )
+        self.assertEqual(wrong_password_login.status_code, 401)
+
+        new_login = self.client.post(
+            "/api/auth/login",
+            json={"username": "alice_new", "password": "newpass123"},
+        )
+        self.assertEqual(new_login.status_code, 200)
+        self.assertIn("access_token", new_login.get_json())
+
+    def test_admin_update_username_conflict_returns_409(self):
+        self._register("admin")
+        self._register("alice")
+        self._register("bob")
+        self._make_admin("admin")
+        admin_headers = self._auth_header("admin")
+        bob_id = self._user_id("bob")
+
+        response = self.client.patch(
+            f"/admin/api/users/{bob_id}/credentials",
+            headers=admin_headers,
+            json={"username": "alice"},
+        )
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.get_json()["error"], "Username already exists")
+
+    def test_cors_preflight_headers_are_not_added_by_app(self):
+        response = self.client.open(
+            "/api/contacts",
+            method="OPTIONS",
+            headers={
+                "Origin": "http://localhost:5173",
+                "Access-Control-Request-Method": "GET",
+                "Access-Control-Request-Headers": "Authorization, Content-Type",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.headers.get("Access-Control-Allow-Origin"))
+        self.assertIsNone(response.headers.get("Access-Control-Allow-Credentials"))
+        self.assertIsNone(response.headers.get("Access-Control-Allow-Methods"))
+        self.assertIsNone(response.headers.get("Access-Control-Allow-Headers"))
 
     def test_auth_rotate_public_key_updates_user_key(self):
         self._register("alice")
@@ -622,6 +718,125 @@ class TestApiRoutes(unittest.TestCase):
         after_unfollow_payload = profile_after_unfollow.get_json()
         self.assertEqual(after_unfollow_payload["followers_count"], 0)
 
+    def test_block_user_hides_profiles_posts_and_search_results(self):
+        self._register("alice")
+        self._register("bob")
+        alice_headers = self._auth_header("alice")
+        bob_headers = self._auth_header("bob")
+
+        self.assertEqual(
+            self.client.post("/api/posts", json={"text": "alice says hi"}, headers=alice_headers).status_code,
+            201,
+        )
+        self.assertEqual(
+            self.client.post("/api/posts", json={"text": "bob says hi"}, headers=bob_headers).status_code,
+            201,
+        )
+
+        block_response = self.client.post("/api/blocks/bob", headers=alice_headers)
+        self.assertEqual(block_response.status_code, 201)
+        self.assertTrue(block_response.get_json()["created"])
+
+        block_repeat = self.client.post("/api/blocks/bob", headers=alice_headers)
+        self.assertEqual(block_repeat.status_code, 200)
+        self.assertFalse(block_repeat.get_json()["created"])
+
+        alice_feed = self.client.get("/api/posts", headers=alice_headers)
+        self.assertEqual(alice_feed.status_code, 200)
+        self.assertEqual(alice_feed.get_json()["total"], 1)
+        self.assertEqual(alice_feed.get_json()["posts"][0]["author"]["username"], "alice")
+
+        bob_feed = self.client.get("/api/posts", headers=bob_headers)
+        self.assertEqual(bob_feed.status_code, 200)
+        self.assertEqual(bob_feed.get_json()["total"], 1)
+        self.assertEqual(bob_feed.get_json()["posts"][0]["author"]["username"], "bob")
+
+        blocked_profile = self.client.get("/api/profiles/alice", headers=bob_headers)
+        self.assertEqual(blocked_profile.status_code, 404)
+        self.assertEqual(blocked_profile.get_json()["error"], "User not found")
+
+        blocked_profile_posts = self.client.get("/api/profiles/alice/posts", headers=bob_headers)
+        self.assertEqual(blocked_profile_posts.status_code, 404)
+        self.assertEqual(blocked_profile_posts.get_json()["error"], "User not found")
+
+        hidden_profile_from_blocker = self.client.get("/api/profiles/bob", headers=alice_headers)
+        self.assertEqual(hidden_profile_from_blocker.status_code, 404)
+
+        users_search = self.client.get("/api/search/users?q=alice", headers=bob_headers)
+        self.assertEqual(users_search.status_code, 200)
+        self.assertEqual(users_search.get_json()["total"], 0)
+
+        posts_search = self.client.get("/api/search/posts?q=alice", headers=bob_headers)
+        self.assertEqual(posts_search.status_code, 200)
+        self.assertEqual(posts_search.get_json()["total"], 0)
+
+    def test_blocked_user_cannot_fetch_public_key(self):
+        self._register("alice", public_key="alice_key")
+        self._register("bob", public_key="bob_key")
+        alice_headers = self._auth_header("alice")
+        bob_headers = self._auth_header("bob")
+
+        self.assertEqual(
+            self.client.post("/api/follows/alice", headers=bob_headers).status_code,
+            200,
+        )
+        self.assertEqual(
+            self.client.post("/api/blocks/bob", headers=alice_headers).status_code,
+            201,
+        )
+
+        public_key_response = self.client.get(
+            "/api/contacts/alice/public-key",
+            headers=bob_headers,
+        )
+        self.assertEqual(public_key_response.status_code, 403)
+        self.assertEqual(
+            public_key_response.get_json()["error"],
+            "You cannot message this user",
+        )
+
+    def test_block_list_and_unblock_flow(self):
+        self._register("alice")
+        self._register("bob")
+        self._register("charlie")
+        alice_headers = self._auth_header("alice")
+        bob_headers = self._auth_header("bob")
+
+        self.assertEqual(
+            self.client.post("/api/blocks/bob", headers=alice_headers).status_code,
+            201,
+        )
+        self.assertEqual(
+            self.client.post("/api/blocks/charlie", headers=alice_headers).status_code,
+            201,
+        )
+
+        blocked_list = self.client.get("/api/blocks?page=1&limit=50", headers=alice_headers)
+        self.assertEqual(blocked_list.status_code, 200)
+        blocked_payload = blocked_list.get_json()
+        self.assertEqual(blocked_payload["total"], 2)
+        self.assertEqual(
+            [user["username"] for user in blocked_payload["users"]],
+            ["bob", "charlie"],
+        )
+
+        blocked_profile = self.client.get("/api/profiles/alice", headers=bob_headers)
+        self.assertEqual(blocked_profile.status_code, 404)
+
+        unblock_response = self.client.delete("/api/blocks/bob", headers=alice_headers)
+        self.assertEqual(unblock_response.status_code, 200)
+        self.assertEqual(unblock_response.get_json()["message"], "User unblocked")
+        self.assertTrue(unblock_response.get_json()["removed"])
+
+        blocked_list_after = self.client.get("/api/blocks?page=1&limit=50", headers=alice_headers)
+        self.assertEqual(blocked_list_after.status_code, 200)
+        blocked_after_payload = blocked_list_after.get_json()
+        self.assertEqual(blocked_after_payload["total"], 1)
+        self.assertEqual(blocked_after_payload["users"][0]["username"], "charlie")
+
+        unblocked_profile = self.client.get("/api/profiles/alice", headers=bob_headers)
+        self.assertEqual(unblocked_profile.status_code, 200)
+
     def test_follow_status_endpoint(self):
         self._register("alice")
         self._register("bob")
@@ -1014,6 +1229,175 @@ class TestApiRoutes(unittest.TestCase):
         )
         self.assertEqual(search_all.status_code, 200)
         self.assertEqual(search_all.get_json()["posts"][0]["viewer_vote"], 1)
+
+    def test_report_post_and_handle_delete_post_hides_post(self):
+        self._register("alice")
+        self._register("bob")
+        self._register("admin")
+        self._make_admin("admin")
+
+        alice_headers = self._auth_header("alice")
+        bob_headers = self._auth_header("bob")
+        admin_headers = self._auth_header("admin")
+
+        create_post = self.client.post(
+            "/api/posts",
+            json={"text": "reported post"},
+            headers=bob_headers,
+        )
+        self.assertEqual(create_post.status_code, 201)
+        post_id = create_post.get_json()["post_id"]
+
+        report_resp = self.client.post(
+            f"/api/posts/{post_id}/reports",
+            json={"report_type": "spam", "description": "this looks spammy"},
+            headers=alice_headers,
+        )
+        self.assertEqual(report_resp.status_code, 201)
+
+        reports_resp = self.client.get("/admin/api/reports", headers=admin_headers)
+        self.assertEqual(reports_resp.status_code, 200)
+        reports_payload = reports_resp.get_json()
+        self.assertEqual(reports_payload["total"], 1)
+        report_id = reports_payload["reports"][0]["id"]
+        self.assertEqual(reports_payload["reports"][0]["status"], "pending")
+
+        handle_resp = self.client.post(
+            f"/admin/api/reports/{report_id}/handle",
+            json={"decision": "delete_post", "admin_note": "policy violation"},
+            headers=admin_headers,
+        )
+        self.assertEqual(handle_resp.status_code, 200)
+        handled_payload = handle_resp.get_json()["report"]
+        self.assertEqual(handled_payload["status"], "handled")
+        self.assertEqual(handled_payload["admin_decision"], "delete_post")
+        self.assertEqual(handled_payload["handled_by_admin"]["username"], "admin")
+
+        feed_resp = self.client.get("/api/posts")
+        self.assertEqual(feed_resp.status_code, 200)
+        self.assertEqual(feed_resp.get_json()["total"], 0)
+
+        comments_resp = self.client.get(f"/api/posts/{post_id}/comments")
+        self.assertEqual(comments_resp.status_code, 404)
+        self.assertEqual(comments_resp.get_json()["error"], "Post not found")
+
+        with self.app.app_context():
+            from app.models.post_model import Post
+
+            post = Post.query.get(post_id)
+            self.assertIsNotNone(post)
+            self.assertTrue(post.is_hidden)
+            self.assertIsNotNone(post.purge_after)
+
+    def test_report_post_and_handle_delete_account_suspends_user(self):
+        self._register("alice")
+        self._register("bob")
+        self._register("admin")
+        self._make_admin("admin")
+
+        alice_headers = self._auth_header("alice")
+        bob_headers = self._auth_header("bob")
+        admin_headers = self._auth_header("admin")
+
+        create_post = self.client.post(
+            "/api/posts",
+            json={"text": "reported account post"},
+            headers=bob_headers,
+        )
+        post_id = create_post.get_json()["post_id"]
+
+        report_resp = self.client.post(
+            f"/api/posts/{post_id}/reports",
+            json={"report_type": "scam"},
+            headers=alice_headers,
+        )
+        self.assertEqual(report_resp.status_code, 201)
+        report_id = report_resp.get_json()["report_id"]
+
+        handle_resp = self.client.post(
+            f"/admin/api/reports/{report_id}/handle",
+            json={"decision": "delete_account"},
+            headers=admin_headers,
+        )
+        self.assertEqual(handle_resp.status_code, 200)
+        self.assertEqual(handle_resp.get_json()["report"]["admin_decision"], "delete_account")
+
+        profile_resp = self.client.get("/api/profiles/bob")
+        self.assertEqual(profile_resp.status_code, 404)
+
+        login_resp = self.client.post(
+            "/api/auth/login",
+            json={"username": "bob", "password": "pass123"},
+        )
+        self.assertEqual(login_resp.status_code, 403)
+        self.assertEqual(login_resp.get_json()["error"], "Account suspended")
+
+        feed_resp = self.client.get("/api/posts")
+        self.assertEqual(feed_resp.status_code, 200)
+        self.assertEqual(feed_resp.get_json()["total"], 0)
+
+        with self.app.app_context():
+            from app.models.user_model import User
+            from app.models.post_model import Post
+
+            user = User.query.filter_by(username="bob").first()
+            self.assertIsNotNone(user)
+            self.assertTrue(user.is_suspended)
+
+            post = Post.query.get(post_id)
+            self.assertIsNotNone(post)
+            self.assertTrue(post.is_hidden)
+
+    def test_report_cleanup_hard_deletes_after_retention_window(self):
+        self._register("alice")
+        self._register("bob")
+        self._register("admin")
+        self._make_admin("admin")
+
+        alice_headers = self._auth_header("alice")
+        bob_headers = self._auth_header("bob")
+        admin_headers = self._auth_header("admin")
+
+        create_post = self.client.post(
+            "/api/posts",
+            json={"text": "to be purged"},
+            headers=bob_headers,
+        )
+        post_id = create_post.get_json()["post_id"]
+
+        report_resp = self.client.post(
+            f"/api/posts/{post_id}/reports",
+            json={"report_type": "false_information"},
+            headers=alice_headers,
+        )
+        report_id = report_resp.get_json()["report_id"]
+
+        handle_resp = self.client.post(
+            f"/admin/api/reports/{report_id}/handle",
+            json={"decision": "delete_post"},
+            headers=admin_headers,
+        )
+        self.assertEqual(handle_resp.status_code, 200)
+
+        with self.app.app_context():
+            from app.models.post_model import Post
+            from app.models.report_model import PostReport
+            from app.services import report_service
+
+            post = Post.query.get(post_id)
+            report = PostReport.query.get(report_id)
+            self.assertIsNotNone(post)
+            self.assertIsNotNone(report)
+
+            now = datetime.utcnow()
+            post.purge_after = now - timedelta(seconds=1)
+            report.decision_expires_at = now - timedelta(seconds=1)
+            self.db.session.commit()
+
+            report_service.run_scheduled_cleanup(force=True)
+
+            self.assertIsNone(Post.query.get(post_id))
+            self.assertIsNone(PostReport.query.get(report_id))
 
 
     def test_message_attachment_upload_success(self):

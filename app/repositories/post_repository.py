@@ -7,6 +7,8 @@ def create_post_by_username(username, text):
     user = User.query.filter_by(username=username).first()
     if not user:
         raise ValueError("User not found")
+    if getattr(user, "is_suspended", False):
+        raise ValueError("Account suspended")
 
     post = Post(
         author_id=user.id,

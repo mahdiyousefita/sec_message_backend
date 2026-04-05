@@ -67,6 +67,12 @@ tr:hover{background:#1e293b}
 .modal h2{font-size:1.1rem;color:#38bdf8;margin-bottom:1rem}
 .modal .close-btn{float:right;background:none;border:none;color:#94a3b8;font-size:1.3rem;cursor:pointer}
 .modal .close-btn:hover{color:#e2e8f0}
+.form-group{display:flex;flex-direction:column;gap:.4rem;margin-bottom:.9rem}
+.form-group label{font-size:.82rem;color:#94a3b8}
+.form-group input{padding:.6rem .8rem;border:1px solid #334155;border-radius:8px;background:#0f172a;color:#e2e8f0;font-size:.9rem;outline:none}
+.form-group input:focus{border-color:#38bdf8}
+.form-note{font-size:.78rem;color:#64748b;margin-top:-.25rem;margin-bottom:.7rem}
+.modal-actions{display:flex;justify-content:flex-end;gap:.6rem;margin-top:1rem}
 
 /* Post detail */
 .post-detail{margin-bottom:1.5rem;padding:1rem;background:#0f172a;border-radius:8px}
@@ -117,6 +123,7 @@ tr:hover{background:#1e293b}
 <div class="tabs">
   <div class="tab active" data-tab="users" onclick="switchTab('users')">Users</div>
   <div class="tab" data-tab="posts" onclick="switchTab('posts')">Posts</div>
+  <div class="tab" data-tab="reports" onclick="switchTab('reports')">Reports</div>
 </div>
 
 <div class="container">
@@ -139,6 +146,28 @@ tr:hover{background:#1e293b}
     <div id="postsTable"></div>
     <div class="pagination" id="postsPagination"></div>
   </div>
+
+  <!-- Reports Section -->
+  <div class="section" id="sec-reports">
+    <div class="search-bar">
+      <select id="reportStatus" style="padding:.6rem .8rem;border:1px solid #334155;border-radius:8px;background:#0f172a;color:#e2e8f0;">
+        <option value="">All statuses</option>
+        <option value="pending">Pending</option>
+        <option value="handled">Handled</option>
+      </select>
+      <select id="reportType" style="padding:.6rem .8rem;border:1px solid #334155;border-radius:8px;background:#0f172a;color:#e2e8f0;">
+        <option value="">All types</option>
+        <option value="scam">Scam</option>
+        <option value="unethical_content">Unethical Content</option>
+        <option value="violence">Violence</option>
+        <option value="spam">Spam</option>
+        <option value="false_information">False Information</option>
+      </select>
+      <button onclick="searchReports()">Apply</button>
+    </div>
+    <div id="reportsTable"></div>
+    <div class="pagination" id="reportsPagination"></div>
+  </div>
 </div>
 
 <!-- Post Detail Modal -->
@@ -147,6 +176,27 @@ tr:hover{background:#1e293b}
     <button class="close-btn" onclick="closePostModal()">&times;</button>
     <h2>Post Detail</h2>
     <div id="postDetailContent"><div class="loading">Loading…</div></div>
+  </div>
+</div>
+
+<!-- Edit Credentials Modal -->
+<div class="modal-overlay" id="credentialsModal">
+  <div class="modal" style="max-width:520px">
+    <button class="close-btn" onclick="closeCredentialModal()">&times;</button>
+    <h2>Edit User Credentials</h2>
+    <div class="form-group">
+      <label for="credUsername">Username</label>
+      <input type="text" id="credUsername" autocomplete="off">
+    </div>
+    <div class="form-group">
+      <label for="credPassword">New Password (optional)</label>
+      <input type="password" id="credPassword" autocomplete="new-password" placeholder="Leave empty to keep current password">
+    </div>
+    <div class="form-note">Changing password is optional. If set, a new hash will be stored.</div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeCredentialModal()">Cancel</button>
+      <button class="btn btn-success" onclick="saveCredentialChanges()">Save</button>
+    </div>
   </div>
 </div>
 
@@ -169,7 +219,9 @@ const TOKEN_KEY = 'admin_token';
 const USER_KEY = 'admin_user';
 let token = localStorage.getItem(TOKEN_KEY);
 let currentTab = 'users';
-let usersPage = 1, postsPage = 1;
+let usersPage = 1, postsPage = 1, reportsPage = 1;
+let editingCredentialUserId = null;
+let editingCredentialOriginalUsername = '';
 
 function api(path, opts = {}) {
   const headers = { ...(opts.headers || {}) };
@@ -210,7 +262,8 @@ function switchTab(tab) {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
   document.querySelectorAll('.section').forEach(s => s.classList.toggle('active', s.id === 'sec-' + tab));
   if (tab === 'users') searchUsers();
-  else searchPosts();
+  else if (tab === 'posts') searchPosts();
+  else searchReports();
 }
 
 // ── Users ───────────────────────────────────
@@ -231,15 +284,17 @@ function renderUsersTable(data) {
   let html = '<table><thead><tr><th>ID</th><th>Username</th><th>Name</th><th>Role</th><th>Actions</th></tr></thead><tbody>';
   for (const u of users) {
     const badge = u.is_admin ? '<span class="badge badge-admin">Admin</span>' : '<span class="badge badge-user">User</span>';
+    const usernameArg = JSON.stringify(u.username || '');
     const promoteBtn = u.is_admin
       ? `<button class="btn btn-warning" onclick="demoteUser(${u.id},'${esc(u.username)}')">Demote</button>`
       : `<button class="btn btn-success" onclick="promoteUser(${u.id},'${esc(u.username)}')">Promote</button>`;
+    const credentialBtn = `<button class="btn btn-info" onclick='openCredentialModal(${u.id}, ${usernameArg})'>Edit Creds</button>`;
     html += `<tr>
       <td>${u.id}</td>
       <td>${esc(u.username)}</td>
       <td>${esc(u.name)}</td>
       <td>${badge}</td>
-      <td>${promoteBtn} <button class="btn btn-danger" onclick="deleteUser(${u.id},'${esc(u.username)}')">Delete</button></td>
+      <td>${credentialBtn} ${promoteBtn} <button class="btn btn-danger" onclick="deleteUser(${u.id},'${esc(u.username)}')">Delete</button></td>
     </tr>`;
   }
   html += '</tbody></table>';
@@ -270,6 +325,59 @@ function deleteUser(id, name) {
     if (res.ok) { toast('User deleted'); searchUsers(usersPage); }
     else { const d = await res.json(); toast(d.error || 'Failed', 'error'); }
   });
+}
+
+function openCredentialModal(userId, currentUsername) {
+  editingCredentialUserId = userId;
+  editingCredentialOriginalUsername = String(currentUsername || '');
+  document.getElementById('credUsername').value = editingCredentialOriginalUsername;
+  document.getElementById('credPassword').value = '';
+  document.getElementById('credentialsModal').classList.add('visible');
+}
+
+function closeCredentialModal() {
+  editingCredentialUserId = null;
+  editingCredentialOriginalUsername = '';
+  document.getElementById('credentialsModal').classList.remove('visible');
+}
+
+async function saveCredentialChanges() {
+  if (!editingCredentialUserId) {
+    toast('No selected user', 'error');
+    return;
+  }
+
+  const username = document.getElementById('credUsername').value.trim();
+  const password = document.getElementById('credPassword').value;
+
+  if (!username) {
+    toast('Username cannot be empty', 'error');
+    return;
+  }
+
+  const payload = {};
+  if (username !== editingCredentialOriginalUsername) payload.username = username;
+  if (password.trim()) payload.password = password;
+
+  if (!Object.keys(payload).length) {
+    toast('No changes to save', 'error');
+    return;
+  }
+
+  const res = await api('/api/users/' + editingCredentialUserId + '/credentials', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  const data = await res.json().catch(() => ({}));
+  if (res.ok) {
+    closeCredentialModal();
+    toast(data.message || 'User credentials updated');
+    searchUsers(usersPage);
+  } else {
+    toast(data.error || 'Failed to update credentials', 'error');
+  }
 }
 
 // ── Posts ───────────────────────────────────
@@ -313,6 +421,110 @@ function deletePost(id) {
     const res = await api('/api/posts/' + id, { method: 'DELETE' });
     if (res.ok) { toast('Post deleted'); searchPosts(postsPage); }
     else { const d = await res.json(); toast(d.error || 'Failed', 'error'); }
+  });
+}
+
+// ── Reports ─────────────────────────────────
+async function searchReports(page = 1) {
+  reportsPage = page;
+  const status = document.getElementById('reportStatus').value;
+  const reportType = document.getElementById('reportType').value;
+  const qs = new URLSearchParams({
+    page: String(page),
+    limit: '20',
+  });
+  if (status) qs.set('status', status);
+  if (reportType) qs.set('report_type', reportType);
+
+  const res = await api('/api/reports?' + qs.toString());
+  if (!res.ok) { toast('Failed to load reports', 'error'); return; }
+  const data = await res.json();
+  renderReportsTable(data);
+}
+
+function reportTypeLabel(raw) {
+  switch (raw) {
+    case 'scam': return 'Scam';
+    case 'unethical_content': return 'Unethical Content';
+    case 'violence': return 'Violence';
+    case 'spam': return 'Spam';
+    case 'false_information': return 'False Information';
+    default: return raw || '-';
+  }
+}
+
+function renderReportsTable(data) {
+  const { reports, total, page, limit } = data;
+  const container = document.getElementById('reportsTable');
+
+  if (!reports.length) {
+    container.innerHTML = '<div class="empty">No reports found</div>';
+    document.getElementById('reportsPagination').innerHTML = '';
+    return;
+  }
+
+  let html = '<table><thead><tr><th>ID</th><th>Type</th><th>Reporter</th><th>Post</th><th>Status</th><th>Description</th><th>Actions</th></tr></thead><tbody>';
+  for (const r of reports) {
+    const reporter = r.reporter?.username || '-';
+    const postId = r.post?.id;
+    const postIdLabel = postId ? ('#' + postId) : 'deleted';
+    const status = r.status || '-';
+    const description = r.description || '-';
+    const actions = [];
+    if (postId) {
+      actions.push(`<button class="btn btn-info" onclick="viewPost(${postId})">View Post</button>`);
+    }
+    if (status === 'pending') {
+      actions.push(`<button class="btn btn-secondary" onclick="handleReport(${r.id}, 'dismiss')">Dismiss</button>`);
+      actions.push(`<button class="btn btn-warning" onclick="handleReport(${r.id}, 'delete_post')">Delete Post</button>`);
+      actions.push(`<button class="btn btn-danger" onclick="handleReport(${r.id}, 'delete_account')">Delete Account</button>`);
+    } else {
+      actions.push(`<span class="badge badge-user">${esc(r.admin_decision || 'handled')}</span>`);
+    }
+
+    html += `<tr>
+      <td>${r.id}</td>
+      <td>${esc(reportTypeLabel(r.report_type))}</td>
+      <td>${esc(reporter)}</td>
+      <td>${esc(postIdLabel)}</td>
+      <td>${esc(status)}</td>
+      <td>${esc(description.length > 90 ? description.slice(0, 90) + '…' : description)}</td>
+      <td>${actions.join(' ')}</td>
+    </tr>`;
+  }
+  html += '</tbody></table>';
+  container.innerHTML = html;
+
+  renderPagination('reportsPagination', page, limit, total, searchReports);
+}
+
+function handleReport(reportId, decision) {
+  const labels = {
+    dismiss: 'dismiss this report',
+    delete_post: 'delete the reported post for one week (soft delete)',
+    delete_account: 'delete the reported account for one week (soft delete)',
+  };
+
+  const actionLabel = labels[decision] || decision;
+  confirm_action(`Are you sure you want to <b>${esc(actionLabel)}</b>?`, async () => {
+    const note = window.prompt('Optional admin note (max 255 chars):', '') ?? '';
+    const payload = { decision };
+    if (note.trim()) payload.admin_note = note.trim().slice(0, 255);
+
+    const res = await api('/api/reports/' + reportId + '/handle', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    if (res.ok) {
+      toast('Report handled');
+      searchReports(reportsPage);
+      if (currentTab === 'posts') searchPosts(postsPage);
+    } else {
+      const d = await res.json();
+      toast(d.error || 'Failed', 'error');
+    }
   });
 }
 

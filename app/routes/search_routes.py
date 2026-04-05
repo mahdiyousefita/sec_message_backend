@@ -6,7 +6,9 @@ search_bp = Blueprint("search", __name__)
 
 
 @search_bp.route("/search/users", methods=["GET"])
+@jwt_required(optional=True)
 def api_search_users():
+    viewer_username = get_jwt_identity()
     query = request.args.get("q", default="", type=str).strip()
     page = request.args.get("page", default=1, type=int)
     limit = request.args.get("limit", default=10, type=int)
@@ -14,7 +16,12 @@ def api_search_users():
     if not query:
         return jsonify({"error": "Query parameter 'q' is required"}), 400
 
-    data = search_users(query, page, limit)
+    data = search_users(
+        query=query,
+        page=page,
+        limit=limit,
+        viewer_username=viewer_username,
+    )
     return jsonify(data), 200
 
 

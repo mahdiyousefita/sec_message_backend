@@ -16,6 +16,12 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_csv_list(name: str, default_values):
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return list(default_values)
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
 def _resolve_cors_allowed_origins(default_origins):
     cors_origins_raw = os.getenv("CORS_ALLOWED_ORIGINS", "").strip()
     if not cors_origins_raw:
@@ -79,11 +85,22 @@ class Config:
     # Credentialed CORS cannot use a wildcard origin.
     # Defaults include known dev ports + localhost any port.
     _default_cors_origins = [
+        "http://localhost:5173",
         "http://localhost:5175",
         "http://localhost:5176",
+        "https://dinosocial.ir",
         r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     ]
     CORS_ALLOWED_ORIGINS = _resolve_cors_allowed_origins(_default_cors_origins)
+    CORS_ALLOWED_METHODS = _env_csv_list(
+        "CORS_ALLOWED_METHODS",
+        ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    )
+
+    CORS_ALLOWED_HEADERS = _env_csv_list(
+        "CORS_ALLOWED_HEADERS",
+        ["Content-Type", "Authorization"],
+    )
 
     # Cross-site cookies for HTTPS requests from frontend.
     SESSION_COOKIE_SAMESITE = "None"
@@ -103,4 +120,15 @@ class Config:
     )
     SOCKET_PENDING_GROUP_BATCH_SIZE = int(
         os.getenv("SOCKET_PENDING_GROUP_BATCH_SIZE", "100")
+    )
+
+    # Moderation/reporting retention policy
+    MODERATION_SOFT_DELETE_DAYS = int(
+        os.getenv("MODERATION_SOFT_DELETE_DAYS", "7")
+    )
+    REPORT_DECISION_RETENTION_DAYS = int(
+        os.getenv("REPORT_DECISION_RETENTION_DAYS", "7")
+    )
+    MODERATION_CLEANUP_INTERVAL_SECONDS = int(
+        os.getenv("MODERATION_CLEANUP_INTERVAL_SECONDS", "300")
     )

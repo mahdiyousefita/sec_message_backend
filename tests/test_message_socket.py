@@ -97,6 +97,11 @@ class TestSocketMessageFlow(unittest.TestCase):
     def setUp(self):
         self.fake_redis.clear()
         self.socket_events._online_users.clear()
+        with self.app.app_context():
+            from app.models.block_model import Block
+
+            self.db.session.query(Block).delete()
+            self.db.session.commit()
         self.clients = []
 
     def tearDown(self):
@@ -228,6 +233,40 @@ class TestSocketMessageFlow(unittest.TestCase):
         post_disconnect_events = alice.get_received()
         offline_events = [event for event in post_disconnect_events if event["name"] == "user_status"]
         self.assertTrue(any(e["args"][0]["username"] == "bob" and not e["args"][0]["online"] for e in offline_events))
+
+    def test_blocked_user_cannot_send_message_and_receives_block_event(self):
+        alice = self._connect(self.alice_token)
+        bob = self._connect(self.bob_token)
+
+        alice.get_received()
+        bob.get_received()
+
+        client = self.app.test_client()
+        block_response = client.post(
+            "/api/blocks/bob",
+            headers={"Authorization": f"Bearer {self.alice_token}"},
+        )
+        self.assertEqual(block_response.status_code, 201)
+
+        bob_events = bob.get_received()
+        blocked_events = [event for event in bob_events if event["name"] == "chat_blocked"]
+        self.assertEqual(len(blocked_events), 1)
+        blocked_payload = blocked_events[0]["args"][0]
+        self.assertEqual(blocked_payload["blocked_by"], "alice")
+        self.assertEqual(blocked_payload["chat_id"], "alice")
+
+        bob.emit(
+            "send_message",
+            {"to": "alice", "message": "enc-msg-blocked", "encrypted_key": "key-blocked"},
+        )
+        bob_send_events = bob.get_received()
+        message_errors = [event for event in bob_send_events if event["name"] == "message_error"]
+        self.assertEqual(len(message_errors), 1)
+        error_payload = message_errors[0]["args"][0]
+        self.assertEqual(error_payload["code"], "blocked")
+
+        alice_events = alice.get_received()
+        self.assertFalse(any(event["name"] == "new_message" for event in alice_events))
 
 
 if __name__ == "__main__":

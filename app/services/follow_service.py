@@ -15,6 +15,10 @@ MAX_FOLLOW_LIST_LIMIT = 100
 DEFAULT_FOLLOW_LIST_LIMIT = 20
 
 
+def _is_active_user(user):
+    return bool(user) and not bool(getattr(user, "is_suspended", False))
+
+
 def _build_profile_image_url(image_object_name: str | None):
     if not image_object_name:
         return None
@@ -40,7 +44,7 @@ def follow_by_username(follower_username: str, following_username: str) -> bool:
     follower = user_repository.get_by_username(follower_username)
     target = user_repository.get_by_username(following_username)
 
-    if not follower or not target:
+    if not _is_active_user(follower) or not _is_active_user(target):
         raise ValueError("User not found")
     if follower.id == target.id:
         raise ValueError("You cannot follow yourself")
@@ -52,7 +56,7 @@ def unfollow_by_username(follower_username: str, following_username: str) -> boo
     follower = user_repository.get_by_username(follower_username)
     target = user_repository.get_by_username(following_username)
 
-    if not follower or not target:
+    if not _is_active_user(follower) or not _is_active_user(target):
         raise ValueError("User not found")
     if follower.id == target.id:
         raise ValueError("You cannot unfollow yourself")
@@ -62,7 +66,7 @@ def unfollow_by_username(follower_username: str, following_username: str) -> boo
 
 def get_following_for_username(username: str):
     user = user_repository.get_by_username(username)
-    if not user:
+    if not _is_active_user(user):
         return []
     return get_following_usernames(user.id)
 
@@ -70,7 +74,7 @@ def get_following_for_username(username: str):
 def is_user_following(follower_username: str, following_username: str) -> bool:
     follower = user_repository.get_by_username(follower_username)
     target = user_repository.get_by_username(following_username)
-    if not follower or not target:
+    if not _is_active_user(follower) or not _is_active_user(target):
         return False
     return is_following(follower.id, target.id)
 
@@ -81,7 +85,7 @@ def get_follow_status_by_username(
     follower = user_repository.get_by_username(follower_username)
     target = user_repository.get_by_username(following_username)
 
-    if not follower or not target:
+    if not _is_active_user(follower) or not _is_active_user(target):
         raise ValueError("User not found")
 
     return is_following(follower.id, target.id)
@@ -89,7 +93,7 @@ def get_follow_status_by_username(
 
 def get_followers_by_username(username: str, page: int, limit: int):
     user = user_repository.get_by_username(username)
-    if not user:
+    if not _is_active_user(user):
         raise ValueError("User not found")
 
     page, limit = _normalize_page_limit(page, limit)
@@ -113,7 +117,7 @@ def get_followers_by_username(username: str, page: int, limit: int):
 
 def get_following_page_by_username(username: str, page: int, limit: int):
     user = user_repository.get_by_username(username)
-    if not user:
+    if not _is_active_user(user):
         raise ValueError("User not found")
 
     page, limit = _normalize_page_limit(page, limit)
