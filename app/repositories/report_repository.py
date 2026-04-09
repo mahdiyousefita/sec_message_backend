@@ -60,13 +60,16 @@ def list_reports(
     return total, items
 
 
-def list_expired_handled(now: datetime):
-    return (
+def list_expired_handled(now: datetime, limit: int | None = None):
+    query = (
         PostReport.query
         .filter(
             PostReport.status == "handled",
             PostReport.decision_expires_at.isnot(None),
             PostReport.decision_expires_at <= now,
         )
-        .all()
+        .order_by(PostReport.decision_expires_at.asc(), PostReport.id.asc())
     )
+    if limit is not None:
+        query = query.limit(max(int(limit), 1))
+    return query.all()

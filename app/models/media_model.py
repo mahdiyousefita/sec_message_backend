@@ -12,5 +12,7 @@ class Media(db.Model):
     )
     object_name = db.Column(db.String(255), nullable=False)
     mime_type = db.Column(db.String(50), nullable=False)
+    display_name = db.Column(db.String(255), nullable=True)
+    title = db.Column(db.String(255), nullable=True)
+    artist = db.Column(db.String(255), nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
-

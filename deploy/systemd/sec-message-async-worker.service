@@ -1,0 +1,21 @@
+[Unit]
+Description=Sec Message Async Task Worker
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/home/appuser/backend/sec_message_backend-main/.env
+
+[Service]
+Type=simple
+User=appuser
+Group=appuser
+WorkingDirectory=/home/appuser/backend/sec_message_backend-main
+EnvironmentFile=/home/appuser/backend/sec_message_backend-main/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/appuser/backend/sec_message_backend-main/venv/bin/python run_async_worker.py
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target

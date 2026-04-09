@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 
 
 class TestAuthRegisterValidation(unittest.TestCase):
@@ -62,6 +63,36 @@ class TestAuthRegisterValidation(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.get_json()["error"], "Missing fields")
 
+    def test_pending_registration_is_expired_handles_mixed_timezone_awareness(self):
+        from app.models.pending_registration_model import PendingRegistration
+
+        pending = PendingRegistration(
+            registration_id="reg-1",
+            username="pending_user",
+            password_hash="hash",
+            public_key="pub",
+            name="Pending User",
+            expires_at=datetime.now(timezone.utc) - timedelta(seconds=5),
+        )
+
+        self.assertTrue(pending.is_expired(datetime.now()))
+
+    def test_pending_registration_seconds_until_expiry_handles_mixed_timezone_awareness(self):
+        from app.models.pending_registration_model import PendingRegistration
+
+        pending = PendingRegistration(
+            registration_id="reg-2",
+            username="pending_user_2",
+            password_hash="hash",
+            public_key="pub",
+            name="Pending User 2",
+            expires_at=datetime.now(timezone.utc) + timedelta(seconds=90),
+        )
+
+        remaining = pending.seconds_until_expiry(datetime.now())
+        self.assertGreaterEqual(remaining, 1)
+
 
 if __name__ == "__main__":
     unittest.main()
+

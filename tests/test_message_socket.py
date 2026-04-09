@@ -3,43 +3,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-
-class FakeRedis:
-    def __init__(self):
-        self._sets = {}
-        self._lists = {}
-
-    def clear(self):
-        self._sets.clear()
-        self._lists.clear()
-
-    def sadd(self, key, value):
-        self._sets.setdefault(key, set()).add(value)
-
-    def smembers(self, key):
-        return self._sets.get(key, set())
-
-    def sismember(self, key, value):
-        return value in self._sets.get(key, set())
-
-    def rpush(self, key, value):
-        self._lists.setdefault(key, []).append(value)
-
-    def lpop(self, key):
-        values = self._lists.get(key, [])
-        if not values:
-            return None
-        return values.pop(0)
-
-    def lrange(self, key, start, end):
-        values = self._lists.get(key, [])
-        if end == -1:
-            end = len(values) - 1
-        return values[start:end + 1]
-
-    def delete(self, key):
-        self._lists.pop(key, None)
-        self._sets.pop(key, None)
+from tests.fake_redis import FakeRedis
 
 
 class TestSocketMessageFlow(unittest.TestCase):
@@ -214,6 +178,36 @@ class TestSocketMessageFlow(unittest.TestCase):
         payload = new_message_events[0]["args"][0]
         self.assertEqual(payload["type"], "image")
         self.assertEqual(payload["attachment"]["url"], attachment["url"])
+
+    def test_post_share_message_type_is_delivered(self):
+        alice = self._connect(self.alice_token)
+        bob = self._connect(self.bob_token)
+
+        alice.get_received()
+        bob.get_received()
+
+        alice.emit(
+            "send_message",
+            {
+                "to": "bob",
+                "message": "[POST_SHARE]|42|alice|hello",
+                "encrypted_key": "post-key-1",
+                "type": "post",
+            },
+        )
+
+        alice_events = alice.get_received()
+        bob_events = bob.get_received()
+
+        sent_events = [event for event in alice_events if event["name"] == "message_sent"]
+        self.assertEqual(len(sent_events), 1)
+        self.assertEqual(sent_events[0]["args"][0]["type"], "post")
+
+        new_message_events = [event for event in bob_events if event["name"] == "new_message"]
+        self.assertEqual(len(new_message_events), 1)
+        payload = new_message_events[0]["args"][0]
+        self.assertEqual(payload["type"], "post")
+        self.assertEqual(payload["message"], "[POST_SHARE]|42|alice|hello")
 
     def test_user_status_events_and_query(self):
         alice = self._connect(self.alice_token)

@@ -1,0 +1,15 @@
+[Unit]
+Description=Sec Message Moderation Cleanup Worker (One Shot)
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/home/appuser/backend/sec_message_backend-main/.env
+
+[Service]
+Type=oneshot
+User=appuser
+Group=appuser
+WorkingDirectory=/home/appuser/backend/sec_message_backend-main
+EnvironmentFile=/home/appuser/backend/sec_message_backend-main/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/appuser/backend/sec_message_backend-main/venv/bin/python run_cleanup_worker.py --once
+TimeoutStartSec=120

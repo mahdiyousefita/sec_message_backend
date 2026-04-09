@@ -5,7 +5,12 @@ from app.models.profile_model import Profile
 from app.models.post_model import Post
 from app.models.vote_model import Vote
 from app.services import block_service
-from app.services.post_service import _build_author_maps, _serialize_post
+from app.services.post_service import (
+    _build_author_maps,
+    _post_visibility_filter,
+    _serialize_post,
+    _viewer_user_id,
+)
 
 
 def _serialize_user(user, profile):
@@ -23,19 +28,15 @@ def _serialize_user(user, profile):
     }
 
 
-def _build_vote_map(posts: list[Post], viewer_username: str | None):
-    if not posts or not viewer_username:
-        return {}
-
-    viewer_user = User.query.filter_by(username=viewer_username).first()
-    if not viewer_user or getattr(viewer_user, "is_suspended", False):
+def _build_vote_map(posts: list[Post], viewer_user_id: int | None):
+    if not posts or not viewer_user_id:
         return {}
 
     post_ids = {post.id for post in posts}
     votes = (
         Vote.query
         .filter(
-            Vote.user_id == viewer_user.id,
+            Vote.user_id == viewer_user_id,
             Vote.target_type == "post",
             Vote.target_id.in_(post_ids),
         )
@@ -93,6 +94,7 @@ def search_posts(
         limit = 50
 
     pattern = f"%{query}%"
+    viewer_user_id = _viewer_user_id(viewer_username)
     hidden_user_ids = block_service.hidden_user_ids_for_viewer(viewer_username)
 
     base_query = (
@@ -102,6 +104,7 @@ def search_posts(
         .filter(
             Post.is_hidden.is_(False),
             User.is_suspended.is_(False),
+            _post_visibility_filter(viewer_user_id),
         )
         .filter(Post.text.ilike(pattern))
         .order_by(Post.created_at.desc())
@@ -114,7 +117,7 @@ def search_posts(
 
     author_ids = {p.author_id for p in posts}
     user_by_id, profile_by_user_id = _build_author_maps(author_ids)
-    vote_by_post_id = _build_vote_map(posts=posts, viewer_username=viewer_username)
+    vote_by_post_id = _build_vote_map(posts=posts, viewer_user_id=viewer_user_id)
 
     serialized_posts = []
     for post in posts:

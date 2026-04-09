@@ -9,6 +9,7 @@ class Post(db.Model):
     author_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
     text = db.Column(db.Text, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    followers_only = db.Column(db.Boolean, nullable=False, default=False, index=True)
     is_hidden = db.Column(db.Boolean, nullable=False, default=False, index=True)
     hidden_at = db.Column(db.DateTime, nullable=True, index=True)
     purge_after = db.Column(db.DateTime, nullable=True, index=True)

@@ -1,4 +1,4 @@
-from sqlalchemy import func
+from sqlalchemy import func, select
 
 from app.db import db
 from app.models.comment_model import Comment
@@ -71,5 +71,45 @@ def get_root_comments_by_post_id(
         )
         .limit(page_size)
         .offset(offset)
+        .all()
+    )
+
+
+def count_root_comments_by_post_id(post_id: int) -> int:
+    return (
+        db.session.query(func.count(Comment.id))
+        .filter(
+            Comment.post_id == post_id,
+            Comment.parent_id.is_(None),
+        )
+        .scalar()
+        or 0
+    )
+
+
+def get_comment_subtree_for_roots(post_id: int, root_ids: list[int]):
+    if not root_ids:
+        return []
+
+    root_cte = (
+        select(Comment.id)
+        .where(
+            Comment.post_id == post_id,
+            Comment.id.in_(root_ids),
+        )
+        .cte(name="comment_tree", recursive=True)
+    )
+    children = (
+        select(Comment.id)
+        .where(
+            Comment.post_id == post_id,
+            Comment.parent_id == root_cte.c.id,
+        )
+    )
+    comment_tree = root_cte.union_all(children)
+
+    return (
+        db.session.query(Comment)
+        .join(comment_tree, Comment.id == comment_tree.c.id)
         .all()
     )

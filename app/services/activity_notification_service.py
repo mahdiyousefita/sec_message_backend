@@ -1,4 +1,5 @@
 import json
+import logging
 from datetime import timezone
 
 from flask import current_app, has_request_context, request
@@ -8,6 +9,7 @@ from app.models.comment_model import Comment
 from app.models.user_model import User
 from app.models.profile_model import Profile
 from app.repositories import user_repository
+from app.services import async_task_service
 from app.services import report_service
 from app.repositories.activity_notification_repository import (
     create_notification,
@@ -21,6 +23,7 @@ from app.extensions.extensions import socketio
 
 MAX_LIMIT = 50
 DEFAULT_LIMIT = 20
+LOGGER = logging.getLogger(__name__)
 
 
 def _build_profile_image_url(image_object_name):
@@ -124,7 +127,7 @@ def _emit_activity_notification(recipient_username, payload):
     socketio.emit("activity_notification", payload, room=recipient_username)
 
 
-def notify_follow(actor_username, target_username):
+def _notify_follow_sync(actor_username, target_username):
     actor = user_repository.get_by_username(actor_username)
     target = user_repository.get_by_username(target_username)
     if not actor or not target or actor.id == target.id:
@@ -142,7 +145,7 @@ def notify_follow(actor_username, target_username):
     _emit_activity_notification(target_username, payload)
 
 
-def notify_unfollow(actor_username, target_username):
+def _notify_unfollow_sync(actor_username, target_username):
     actor = user_repository.get_by_username(actor_username)
     target = user_repository.get_by_username(target_username)
     if not actor or not target or actor.id == target.id:
@@ -160,7 +163,7 @@ def notify_unfollow(actor_username, target_username):
     _emit_activity_notification(target_username, payload)
 
 
-def notify_comment(
+def _notify_comment_sync(
     actor_username,
     post_id,
     comment_text,
@@ -176,7 +179,7 @@ def notify_comment(
         return
 
     base_extra = {
-        "comment_preview": (comment_text or "")[:120],
+        "comment_preview": comment_text or "",
         "post_text_preview": (post.text or "")[:120],
         "post_id": post.id,
         "comment_id": comment_id,
@@ -238,7 +241,7 @@ def notify_comment(
         _emit_activity_notification(recipient.username, payload)
 
 
-def notify_vote(actor_username, target_type, target_id, value):
+def _notify_vote_sync(actor_username, target_type, target_id, value):
     actor = user_repository.get_by_username(actor_username)
     if not actor:
         return
@@ -275,3 +278,121 @@ def notify_vote(actor_username, target_type, target_id, value):
     user_by_id, profile_by_user_id = _build_author_maps({actor.id})
     payload = _serialize_notification(notif, user_by_id, profile_by_user_id)
     _emit_activity_notification(recipient.username, payload)
+
+
+def process_async_notification_event(payload: dict):
+    if not isinstance(payload, dict):
+        return
+
+    event = (payload.get("event") or "").strip().lower()
+    if event == "follow":
+        _notify_follow_sync(
+            payload.get("actor_username"),
+            payload.get("target_username"),
+        )
+        return
+
+    if event == "unfollow":
+        _notify_unfollow_sync(
+            payload.get("actor_username"),
+            payload.get("target_username"),
+        )
+        return
+
+    if event == "comment":
+        _notify_comment_sync(
+            actor_username=payload.get("actor_username"),
+            post_id=payload.get("post_id"),
+            comment_text=payload.get("comment_text"),
+            comment_id=payload.get("comment_id"),
+            parent_comment_id=payload.get("parent_comment_id"),
+        )
+        return
+
+    if event == "vote":
+        _notify_vote_sync(
+            payload.get("actor_username"),
+            payload.get("target_type"),
+            payload.get("target_id"),
+            payload.get("value"),
+        )
+        return
+
+    LOGGER.warning("Unknown activity notification async event: %s", event)
+
+
+def notify_follow(actor_username, target_username):
+    task_payload = {
+        "event": "follow",
+        "actor_username": actor_username,
+        "target_username": target_username,
+    }
+    if async_task_service.enqueue_activity_notification_event(
+        task_payload,
+        source="activity_notification.notify_follow",
+    ):
+        return
+    if async_task_service.should_fallback_inline():
+        _notify_follow_sync(actor_username, target_username)
+
+
+def notify_unfollow(actor_username, target_username):
+    task_payload = {
+        "event": "unfollow",
+        "actor_username": actor_username,
+        "target_username": target_username,
+    }
+    if async_task_service.enqueue_activity_notification_event(
+        task_payload,
+        source="activity_notification.notify_unfollow",
+    ):
+        return
+    if async_task_service.should_fallback_inline():
+        _notify_unfollow_sync(actor_username, target_username)
+
+
+def notify_comment(
+    actor_username,
+    post_id,
+    comment_text,
+    comment_id=None,
+    parent_comment_id=None,
+):
+    task_payload = {
+        "event": "comment",
+        "actor_username": actor_username,
+        "post_id": post_id,
+        "comment_text": comment_text,
+        "comment_id": comment_id,
+        "parent_comment_id": parent_comment_id,
+    }
+    if async_task_service.enqueue_activity_notification_event(
+        task_payload,
+        source="activity_notification.notify_comment",
+    ):
+        return
+    if async_task_service.should_fallback_inline():
+        _notify_comment_sync(
+            actor_username=actor_username,
+            post_id=post_id,
+            comment_text=comment_text,
+            comment_id=comment_id,
+            parent_comment_id=parent_comment_id,
+        )
+
+
+def notify_vote(actor_username, target_type, target_id, value):
+    task_payload = {
+        "event": "vote",
+        "actor_username": actor_username,
+        "target_type": target_type,
+        "target_id": target_id,
+        "value": value,
+    }
+    if async_task_service.enqueue_activity_notification_event(
+        task_payload,
+        source="activity_notification.notify_vote",
+    ):
+        return
+    if async_task_service.should_fallback_inline():
+        _notify_vote_sync(actor_username, target_type, target_id, value)

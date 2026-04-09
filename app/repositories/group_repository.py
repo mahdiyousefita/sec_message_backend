@@ -1,4 +1,5 @@
-from sqlalchemy.orm import aliased
+from sqlalchemy import func
+from sqlalchemy.orm import aliased, joinedload
 
 from app.db import db
 from app.models.group_model import Group, GroupMember
@@ -59,6 +60,7 @@ def get_group_by_id(group_id: int) -> Group | None:
 def get_groups_for_user(user_id: int):
     return (
         Group.query.join(GroupMember, GroupMember.group_id == Group.id)
+        .options(joinedload(Group.creator))
         .filter(GroupMember.user_id == user_id)
         .order_by(Group.created_at.desc())
         .all()
@@ -104,6 +106,33 @@ def get_group_member_usernames(group_id: int) -> list[str]:
 
 def get_group_member_count(group_id: int) -> int:
     return GroupMember.query.filter_by(group_id=group_id).count()
+
+
+def get_group_member_counts(group_ids: list[int]) -> dict[int, int]:
+    if not group_ids:
+        return {}
+
+    normalized_ids = sorted({
+        int(group_id)
+        for group_id in group_ids
+        if group_id is not None
+    })
+    if not normalized_ids:
+        return {}
+
+    rows = (
+        db.session.query(
+            GroupMember.group_id,
+            func.count(GroupMember.user_id),
+        )
+        .filter(GroupMember.group_id.in_(normalized_ids))
+        .group_by(GroupMember.group_id)
+        .all()
+    )
+    return {
+        int(row[0]): int(row[1])
+        for row in rows
+    }
 
 
 def delete_group(group_id: int) -> bool:

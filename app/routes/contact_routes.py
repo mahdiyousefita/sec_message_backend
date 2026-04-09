@@ -3,6 +3,7 @@ from flask_jwt_extended import jwt_required, get_jwt_identity
 from app.services import contact_service
 from app.services import follow_service
 from app.services import block_service
+from app.repositories import message_repository
 from app.models.user_model import User
 from app.extensions.redis_client import redis_client as r
 
@@ -60,7 +61,11 @@ def get_contact_public_key(username):
         return jsonify({"error": "You cannot message this user"}), 403
 
     is_contact = follow_service.is_user_following(requester, username)
-    if not is_contact:
+    has_conversation_history = (
+        message_repository.get_contact_timestamp_score(requester, username) is not None
+        or message_repository.get_contact_timestamp_score(username, requester) is not None
+    )
+    if not is_contact and not has_conversation_history:
         return jsonify({"error": "Not in your contacts"}), 403
 
     return jsonify({"public_key": user.public_key})

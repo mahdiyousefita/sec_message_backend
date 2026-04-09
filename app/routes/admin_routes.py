@@ -19,6 +19,8 @@ from app.models.media_model import Media
 from app.models.vote_model import Vote
 from app.models.follow_model import Follow
 from app.services import report_service
+from app.services import app_update_service
+from app.services.post_service import _build_media_url
 
 admin_bp = Blueprint(
     "admin",
@@ -87,6 +89,30 @@ def admin_login():
 def admin_me():
     username = get_jwt_identity()
     return jsonify({"username": username}), 200
+
+
+# ── App update settings ─────────────────────────────────────────────
+
+@admin_bp.route("/api/app-update/settings", methods=["GET"])
+@admin_required
+def admin_get_app_update_settings():
+    platform = request.args.get("platform", "android")
+    try:
+        settings = app_update_service.get_or_create_config(platform=platform)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"settings": app_update_service.serialize_settings(settings)}), 200
+
+
+@admin_bp.route("/api/app-update/settings", methods=["PATCH"])
+@admin_required
+def admin_update_app_update_settings():
+    data = request.get_json(silent=True)
+    try:
+        settings = app_update_service.update_settings(data)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"message": "Settings updated", "settings": settings}), 200
 
 
 # ── Search ───────────────────────────────────────────────────────────
@@ -158,6 +184,7 @@ def admin_search_posts():
             "text": p.text,
             "author": author.username if author else f"user-{p.author_id}",
             "created_at": p.created_at.isoformat(),
+            "followers_only": bool(getattr(p, "followers_only", False)),
             "is_hidden": bool(getattr(p, "is_hidden", False)),
         })
 
@@ -258,7 +285,17 @@ def admin_get_post(post_id):
             "text": post.text,
             "author": author.username if author else f"user-{post.author_id}",
             "created_at": post.created_at.isoformat(),
-            "media": [{"id": m.id, "object_name": m.object_name, "mime_type": m.mime_type} for m in media_list],
+            "followers_only": bool(getattr(post, "followers_only", False)),
+            "is_hidden": bool(getattr(post, "is_hidden", False)),
+            "media": [
+                {
+                    "id": m.id,
+                    "object_name": m.object_name,
+                    "mime_type": m.mime_type,
+                    "url": _build_media_url(m.object_name),
+                }
+                for m in media_list
+            ],
         },
         "comments": [
             {

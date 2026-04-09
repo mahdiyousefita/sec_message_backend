@@ -7,6 +7,8 @@ from flask_socketio import emit, join_room
 from app.extensions.extensions import socketio 
 from app.services import message_service
 from app.services import activity_notification_service
+from app.services import async_task_service
+from app.services import group_notification_service
 
 logger = logging.getLogger(__name__)
 
@@ -311,32 +313,49 @@ def register_socket_events():
             emit("message_error", {"error": "message_ids must contain valid ids"})
             return
 
-        metadata_by_id = message_service.get_message_metadata_bulk(normalized_message_ids)
-
-        removed = message_service.ack_messages(username, normalized_message_ids)
+        removed, removed_payloads = message_service.ack_messages_with_payloads(
+            username, normalized_message_ids
+        )
         seen_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-        for message_id in normalized_message_ids:
-            metadata = metadata_by_id.get(message_id)
-            sender = metadata.get("sender") if metadata else None
-            if not sender or sender == username:
+
+        seen_ids_by_sender = {}
+        for payload in removed_payloads:
+            sender = payload.get("from")
+            message_id = payload.get("message_id")
+            if not sender or not message_id or sender == username:
                 continue
-            message_service.mark_private_message_seen(sender, username, message_id)
-            seen_payload = {
-                "chat_id": username,
-                "message_id": message_id,
-                "seen_by": username,
-                "seen_at": seen_at,
-            }
-            socketio.emit(
-                "message_seen",
-                seen_payload,
-                room=sender,
+            seen_ids_by_sender.setdefault(sender, []).append(message_id)
+
+        for sender, sender_message_ids in seen_ids_by_sender.items():
+            message_service.mark_private_messages_seen_batch(
+                sender, username, sender_message_ids
             )
-            if not is_user_online(sender):
-                message_service.queue_message_deletion_event(
-                    sender,
+            offline_events = []
+            sender_online = is_user_online(sender)
+            for message_id in sender_message_ids:
+                seen_payload = {
+                    "chat_id": username,
+                    "message_id": message_id,
+                    "seen_by": username,
+                    "seen_at": seen_at,
+                }
+                socketio.emit(
                     "message_seen",
                     seen_payload,
+                    room=sender,
+                )
+                if not sender_online:
+                    offline_events.append(
+                        {
+                            "event": "message_seen",
+                            "payload": seen_payload,
+                        }
+                    )
+
+            if offline_events:
+                message_service.queue_message_deletion_events_batch(
+                    sender,
+                    offline_events,
                 )
 
         emit("ack_confirmed", {"removed": removed})
@@ -488,20 +507,17 @@ def register_socket_events():
                 room_name, sender,
             )
 
-            member_usernames = group_repository.get_group_member_usernames(group_id)
-            group = group_repository.get_group_by_id(group_id)
-            for member_username in member_usernames:
-                if member_username != sender:
-                    socketio.emit("new_notification", {
-                        "from": sender,
-                        "group_id": group_id,
-                        "group_name": group.name if group else "Group Chat",
-                        "type": payload.get("type", "text"),
-                        "timestamp": payload.get("timestamp", ""),
-                        "message_id": payload.get("message_id", ""),
-                    }, room=member_username)
-                    message_repository.push_group_message_to_member(
-                        group_id, member_username, payload
+            if not async_task_service.enqueue_group_message_side_effects(
+                sender=sender,
+                group_id=group_id,
+                message_payload=payload,
+                source="socket.send_group_message",
+            ):
+                if async_task_service.should_fallback_inline():
+                    group_notification_service.dispatch_group_message_side_effects(
+                        sender=sender,
+                        group_id=group_id,
+                        message_payload=payload,
                     )
 
             emit("group_message_sent", {
@@ -560,7 +576,7 @@ def register_socket_events():
             emit("message_error", {"error": "message_ids must be a non-empty list"})
             return
 
-        from app.repositories import group_repository, message_repository
+        from app.repositories import group_repository
         normalized_message_ids = [
             msg_id.strip()
             for msg_id in message_ids
@@ -570,16 +586,21 @@ def register_socket_events():
             emit("message_error", {"error": "message_ids must contain valid ids"})
             return
 
-        metadata_by_id = message_repository.get_message_metadata_bulk(normalized_message_ids)
-
-        removed = message_repository.ack_group_messages(username, group_id, normalized_message_ids)
+        removed, removed_payloads = message_service.ack_group_messages_with_payloads(
+            username, group_id, normalized_message_ids
+        )
         seen_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-        for message_id in normalized_message_ids:
-            metadata = metadata_by_id.get(message_id)
-            sender = metadata.get("sender") if metadata else None
-            if not sender or sender == username:
-                continue
-            message_service.mark_group_message_seen(group_id, message_id)
+
+        seen_pairs = [
+            (payload.get("from"), payload.get("message_id"))
+            for payload in removed_payloads
+            if payload.get("message_id") and payload.get("from") != username
+        ]
+        seen_message_ids = [message_id for _sender, message_id in seen_pairs]
+        if seen_message_ids:
+            message_service.mark_group_messages_seen_batch(group_id, seen_message_ids)
+
+        for sender, message_id in seen_pairs:
             socketio.emit(
                 "group_message_seen",
                 {

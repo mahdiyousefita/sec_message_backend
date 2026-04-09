@@ -1,6 +1,7 @@
 from flask import current_app, has_request_context, request
 
 from app.models.group_model import Group
+from app.models.profile_model import Profile
 from app.repositories import user_repository, group_repository, message_repository
 from app.repositories.follow_repository import is_following
 
@@ -34,6 +35,35 @@ def _build_profile_image_url(image_object_name: str | None) -> str | None:
     if image_object_name.startswith("static/"):
         return f"{base_url}/{image_object_name}" if base_url else f"/{image_object_name}"
     return f"{base_url}/media/{image_object_name}" if base_url else f"/media/{image_object_name}"
+
+
+def _build_group_format_maps(groups: list[Group]):
+    if not groups:
+        return {}, {}
+
+    creator_ids = {
+        group.creator_id
+        for group in groups
+        if group.creator_id is not None
+    }
+    profile_rows = (
+        Profile.query
+        .with_entities(Profile.user_id, Profile.name, Profile.image_object_name)
+        .filter(Profile.user_id.in_(creator_ids))
+        .all()
+    ) if creator_ids else []
+    creator_profile_by_user_id = {
+        row[0]: {
+            "name": row[1],
+            "image_object_name": row[2],
+        }
+        for row in profile_rows
+    }
+
+    member_count_by_group_id = group_repository.get_group_member_counts(
+        [group.id for group in groups]
+    )
+    return creator_profile_by_user_id, member_count_by_group_id
 
 
 def get_mutual_followers(username: str, page: int = 1, limit: int = 50):
@@ -160,9 +190,14 @@ def get_user_groups(username: str):
         raise ValueError("User not found")
 
     groups = group_repository.get_groups_for_user(user.id)
+    creator_profile_by_user_id, member_count_by_group_id = _build_group_format_maps(groups)
     result = []
     for group in groups:
-        formatted = _format_group(group)
+        formatted = _format_group(
+            group,
+            creator_profile_by_user_id=creator_profile_by_user_id,
+            member_count_by_group_id=member_count_by_group_id,
+        )
         unread_count = message_repository.get_group_pending_count(username, group.id)
         formatted["has_unread"] = unread_count > 0
         formatted["unread_count"] = unread_count
@@ -370,22 +405,47 @@ def delete_group(requester_username: str, group_id: int):
     return True
 
 
-def _format_group(group: Group) -> dict:
-    creator_profile = None
-    from app.models.profile_model import Profile
-    creator_profile = Profile.query.filter_by(user_id=group.creator_id).first()
+def _format_group(
+    group: Group,
+    *,
+    creator_profile_by_user_id: dict[int, dict] | None = None,
+    member_count_by_group_id: dict[int, int] | None = None,
+) -> dict:
+    creator_profile_by_user_id = creator_profile_by_user_id or {}
+    member_count_by_group_id = member_count_by_group_id or {}
+
+    creator_profile = creator_profile_by_user_id.get(group.creator_id)
+    if creator_profile is None:
+        profile = Profile.query.filter_by(user_id=group.creator_id).first()
+        creator_profile = (
+            {
+                "name": profile.name,
+                "image_object_name": profile.image_object_name,
+            }
+            if profile else None
+        )
+
+    creator_username = group.creator.username if group.creator else f"user-{group.creator_id}"
+    member_count = member_count_by_group_id.get(group.id)
+    if member_count is None:
+        member_count = group_repository.get_group_member_count(group.id)
 
     return {
         "id": group.id,
         "name": group.name,
         "creator": {
             "id": group.creator_id,
-            "username": group.creator.username,
-            "name": creator_profile.name if creator_profile else group.creator.username,
+            "username": creator_username,
+            "name": (
+                creator_profile.get("name")
+                if creator_profile and creator_profile.get("name")
+                else creator_username
+            ),
             "profile_image_url": _build_profile_image_url(
-                creator_profile.image_object_name if creator_profile else None
+                creator_profile.get("image_object_name")
+                if creator_profile else None
             ),
         },
-        "member_count": group_repository.get_group_member_count(group.id),
+        "member_count": int(member_count),
         "created_at": group.created_at.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
     }

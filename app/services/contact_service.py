@@ -42,15 +42,22 @@ def get_contacts_with_message_status(username, page=1, limit=DEFAULT_CONTACTS_LI
     followed_contacts = follow_service.get_following_for_username(username)
     unread_summary = notification_service.get_unread_summary_map(username)
     pending_senders = set(unread_summary["per_sender"].keys())
+    sender_last_timestamp = {
+        sender: summary.get("last_timestamp")
+        for sender, summary in unread_summary["per_sender"].items()
+    }
 
     all_contact_set = set(followed_contacts) | pending_senders
 
     for contact in all_contact_set:
         if message_repository.get_contact_timestamp_score(username, contact) is None:
-            message_repository.record_conversation_timestamp(
-                username, contact,
-                _latest_inbox_timestamp(username, contact),
-            )
+            last_ts = sender_last_timestamp.get(contact)
+            if last_ts:
+                message_repository.record_conversation_timestamp(
+                    username,
+                    contact,
+                    last_ts,
+                )
 
     total_with_ts = message_repository.count_contacts_with_timestamps(username)
     ts_contacts_with_no_ts = all_contact_set.copy()
@@ -116,20 +123,38 @@ def get_contacts_with_message_status(username, page=1, limit=DEFAULT_CONTACTS_LI
 
     current_user = User.query.filter_by(username=username).first()
     groups = group_repository.get_groups_for_user(current_user.id) if current_user else []
+    group_ids = [group.id for group in groups]
+    creator_ids = {
+        group.creator_id
+        for group in groups
+        if group.creator_id is not None
+    }
+    creator_profiles = (
+        Profile.query
+        .with_entities(Profile.user_id, Profile.name)
+        .filter(Profile.user_id.in_(creator_ids))
+        .all()
+    ) if creator_ids else []
+    creator_name_by_user_id = {
+        row[0]: row[1]
+        for row in creator_profiles
+    }
+    member_count_by_group_id = group_repository.get_group_member_counts(group_ids)
+
     group_list = []
     for grp in groups:
-        from app.models.profile_model import Profile as Prof
-        creator_profile = Prof.query.filter_by(user_id=grp.creator_id).first()
+        creator_username = grp.creator.username if grp.creator else f"user-{grp.creator_id}"
+        creator_name = creator_name_by_user_id.get(grp.creator_id) or creator_username
         group_list.append({
             "type": "group",
             "id": grp.id,
             "name": grp.name,
             "creator": {
                 "id": grp.creator_id,
-                "username": grp.creator.username,
-                "name": creator_profile.name if creator_profile else grp.creator.username,
+                "username": creator_username,
+                "name": creator_name,
             },
-            "member_count": group_repository.get_group_member_count(grp.id),
+            "member_count": int(member_count_by_group_id.get(grp.id, 0)),
             "created_at": grp.created_at.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
         })
 
@@ -140,22 +165,6 @@ def get_contacts_with_message_status(username, page=1, limit=DEFAULT_CONTACTS_LI
         "contacts": result,
         "groups": group_list,
     }
-
-
-def _latest_inbox_timestamp(owner, contact):
-    key = f"inbox:{owner}"
-    from app.extensions.redis_client import redis_client
-    import json
-    messages = redis_client.lrange(key, 0, -1)
-    last_ts = None
-    for raw in messages:
-        try:
-            msg = json.loads(raw)
-            if msg.get("from") == contact:
-                last_ts = msg.get("timestamp")
-        except Exception:
-            continue
-    return last_ts
 
 
 def _build_media_url(object_name):

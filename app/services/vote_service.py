@@ -16,6 +16,8 @@ def vote(username: str, target_type: str, target_id: int, value: int):
     if not user or getattr(user, "is_suspended", False):
         raise ValueError("User not found")
 
+    post = None
+    comment = None
     if target_type == "post":
         post = report_service.get_visible_post(target_id)
         if not post:
@@ -38,12 +40,10 @@ def vote(username: str, target_type: str, target_id: int, value: int):
         return  # رأی تکراری، هیچ تغییری
 
     if target_type == "comment":
-        comment = Comment.query.get(target_id)
         if comment:
             comment.score += delta
 
     elif target_type == "post":
-        post = report_service.get_visible_post(target_id)
         if post and hasattr(post, "score"):
             post.score += delta
 

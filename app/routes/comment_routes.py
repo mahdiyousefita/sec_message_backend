@@ -61,3 +61,17 @@ def list_comments(post_id):
         return jsonify({"error": str(e)}), 404
 
     return jsonify(comments), 200
+
+
+@comment_bp.route("/comments/<int:comment_id>", methods=["DELETE"])
+@jwt_required()
+def delete_comment(comment_id):
+    username = get_jwt_identity()
+
+    try:
+        comment_service.delete_comment_by_username(comment_id=comment_id, username=username)
+        return jsonify({"message": "Comment deleted", "comment_id": comment_id}), 200
+    except PermissionError as e:
+        return jsonify({"error": str(e)}), 403
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404

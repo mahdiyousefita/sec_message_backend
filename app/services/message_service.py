@@ -35,7 +35,7 @@ ALL_ALLOWED_MIME_TYPES = (
     | ALLOWED_AUDIO_MIME_TYPES
 )
 
-ALLOWED_MESSAGE_TYPES = {"text", "image", "video", "voice", "mixed"}
+ALLOWED_MESSAGE_TYPES = {"text", "image", "video", "voice", "mixed", "post"}
 
 MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024       # 10 MB
 MAX_VIDEO_SIZE_BYTES = 50 * 1024 * 1024       # 50 MB
@@ -296,8 +296,18 @@ def get_group_pending_count(username, group_id):
     return message_repository.get_group_pending_count(username, group_id)
 
 
+def ack_group_messages_with_payloads(username, group_id, message_ids):
+    return message_repository.ack_group_messages_with_payloads(
+        username, group_id, message_ids
+    )
+
+
 def ack_messages(username, message_ids):
     return message_repository.ack_messages(username, message_ids)
+
+
+def ack_messages_with_payloads(username, message_ids):
+    return message_repository.ack_messages_with_payloads(username, message_ids)
 
 
 def get_message_metadata(message_id):
@@ -316,6 +326,10 @@ def queue_message_deletion_event(username, event_name, payload):
     return message_repository.queue_message_deletion_event(username, event_name, payload)
 
 
+def queue_message_deletion_events_batch(username, events):
+    return message_repository.queue_message_deletion_events_batch(username, events)
+
+
 def pop_message_deletion_events(username):
     return message_repository.pop_message_deletion_events(username)
 
@@ -328,12 +342,20 @@ def mark_private_message_seen(sender, recipient, message_id):
     return message_repository.mark_private_message_seen(sender, recipient, message_id)
 
 
+def mark_private_messages_seen_batch(sender, recipient, message_ids):
+    return message_repository.mark_private_messages_seen_batch(sender, recipient, message_ids)
+
+
 def get_private_seen_message_ids(sender, recipient, message_ids):
     return message_repository.get_private_seen_message_ids(sender, recipient, message_ids)
 
 
 def mark_group_message_seen(group_id, message_id):
     return message_repository.mark_group_message_seen(group_id, message_id)
+
+
+def mark_group_messages_seen_batch(group_id, message_ids):
+    return message_repository.mark_group_messages_seen_batch(group_id, message_ids)
 
 
 def get_group_seen_message_ids(group_id, message_ids):

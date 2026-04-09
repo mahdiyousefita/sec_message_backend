@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+import re
 import secrets
 
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -10,6 +11,7 @@ from app.repositories import follow_repository, group_repository
 
 
 PENDING_REGISTRATION_TTL_SECONDS = 30 * 60
+USERNAME_ALLOWED_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 class AuthError(ValueError):
@@ -36,6 +38,12 @@ def _normalize_register_fields(username, password, public_key, name):
         raise AuthError("Missing fields", status_code=400)
 
     username = username.strip()
+    if not USERNAME_ALLOWED_PATTERN.fullmatch(username):
+        raise AuthError(
+            "Username can only contain English letters, numbers, '.', '-', and '_'",
+            status_code=400,
+        )
+
     public_key = public_key.strip()
 
     resolved_name = username
@@ -99,7 +107,7 @@ def start_registration(username, password, public_key, name=None, client_nonce=N
             return {
                 "registration_id": existing_same_nonce.registration_id,
                 "expires_in_seconds": max(
-                    1, int((existing_same_nonce.expires_at - now).total_seconds())
+                    1, existing_same_nonce.seconds_until_expiry(now)
                 ),
             }
 
@@ -190,7 +198,6 @@ def refresh_access_token(username):
         "access_token": create_access_token(identity=username)
     }
 
-
 def rotate_public_key(username, public_key):
     if not _require_non_empty_string(username):
         raise AuthError("Unauthorized", status_code=401)
@@ -228,3 +235,4 @@ def rotate_public_key(username, public_key):
         "group_ids": group_ids,
         "notify_usernames": sorted(recipients),
     }
+

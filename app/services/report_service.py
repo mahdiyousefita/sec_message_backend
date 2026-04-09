@@ -1,3 +1,5 @@
+import logging
+import time
 from datetime import datetime, timedelta
 
 from flask import current_app, has_app_context
@@ -79,6 +81,20 @@ def _cleanup_interval_seconds():
     return max(int(Config.MODERATION_CLEANUP_INTERVAL_SECONDS), 10)
 
 
+def _cleanup_batch_size(override: int | None = None):
+    if override is not None:
+        return max(int(override), 1)
+    if has_app_context():
+        return max(int(current_app.config.get("MODERATION_CLEANUP_BATCH_SIZE", 100)), 1)
+    return max(int(Config.MODERATION_CLEANUP_BATCH_SIZE), 1)
+
+
+def _cleanup_logger():
+    if has_app_context():
+        return current_app.logger
+    return logging.getLogger(__name__)
+
+
 def _report_expiry_from(now: datetime):
     return now + timedelta(days=_decision_retention_days())
 
@@ -147,8 +163,6 @@ def create_post_report(
     report_type: str,
     description: str | None = None,
 ):
-    run_scheduled_cleanup()
-
     reporter = User.query.filter_by(username=reporter_username).first()
     if not reporter or reporter.is_suspended:
         raise ValueError("User not found")
@@ -262,8 +276,6 @@ def list_reports_for_admin(
     status: str | None = None,
     report_type: str | None = None,
 ):
-    run_scheduled_cleanup()
-
     page = max(1, page)
     limit = min(50, max(1, limit))
 
@@ -294,8 +306,6 @@ def list_reports_for_admin(
 
 
 def get_report_detail_for_admin(report_id: int):
-    run_scheduled_cleanup()
-
     report = report_repository.get_by_id(report_id)
     if not report:
         raise ValueError("Report not found")
@@ -349,8 +359,6 @@ def handle_report_by_admin(
     decision: str,
     admin_note: str | None = None,
 ):
-    run_scheduled_cleanup()
-
     admin_user = User.query.filter_by(username=admin_username).first()
     if not admin_user or not _is_admin(admin_user.id):
         raise ValueError("Admin not found")
@@ -466,16 +474,33 @@ def _hard_delete_user(user: User):
     db.session.delete(user)
 
 
-def run_scheduled_cleanup(force: bool = False):
+def run_scheduled_cleanup_with_metrics(
+    force: bool = False,
+    *,
+    batch_size: int | None = None,
+):
     global _last_cleanup_at
 
+    logger = _cleanup_logger()
     now = datetime.utcnow()
     if not force and _last_cleanup_at:
         if (now - _last_cleanup_at).total_seconds() < _cleanup_interval_seconds():
-            return 0
+            return {
+                "skipped": True,
+                "force": bool(force),
+                "batch_size": _cleanup_batch_size(batch_size),
+                "users_deleted": 0,
+                "posts_deleted": 0,
+                "reports_deleted": 0,
+                "rows_processed": 0,
+                "duration_ms": 0,
+            }
 
-    changes = 0
-
+    started_at = time.perf_counter()
+    limit = _cleanup_batch_size(batch_size)
+    users_deleted = 0
+    posts_deleted = 0
+    reports_deleted = 0
     try:
         due_users = (
             User.query
@@ -484,11 +509,13 @@ def run_scheduled_cleanup(force: bool = False):
                 User.purge_after.isnot(None),
                 User.purge_after <= now,
             )
+            .order_by(User.purge_after.asc(), User.id.asc())
+            .limit(limit)
             .all()
         )
         for user in due_users:
             _hard_delete_user(user)
-            changes += 1
+            users_deleted += 1
 
         due_posts = (
             Post.query
@@ -497,21 +524,56 @@ def run_scheduled_cleanup(force: bool = False):
                 Post.purge_after.isnot(None),
                 Post.purge_after <= now,
             )
+            .order_by(Post.purge_after.asc(), Post.id.asc())
+            .limit(limit)
             .all()
         )
         for post in due_posts:
             _hard_delete_post(post)
-            changes += 1
+            posts_deleted += 1
 
-        expired_reports = report_repository.list_expired_handled(now)
+        expired_reports = report_repository.list_expired_handled(now, limit=limit)
         for report in expired_reports:
             db.session.delete(report)
-            changes += 1
+            reports_deleted += 1
 
+        changes = users_deleted + posts_deleted + reports_deleted
         if changes:
             db.session.commit()
         _last_cleanup_at = now
-        return changes
+        duration_ms = int((time.perf_counter() - started_at) * 1000)
+        logger.info(
+            "moderation_cleanup completed force=%s batch_size=%s rows=%s users=%s posts=%s reports=%s duration_ms=%s",
+            force,
+            limit,
+            changes,
+            users_deleted,
+            posts_deleted,
+            reports_deleted,
+            duration_ms,
+        )
+        return {
+            "skipped": False,
+            "force": bool(force),
+            "batch_size": limit,
+            "users_deleted": users_deleted,
+            "posts_deleted": posts_deleted,
+            "reports_deleted": reports_deleted,
+            "rows_processed": changes,
+            "duration_ms": duration_ms,
+        }
     except Exception:
         db.session.rollback()
+        duration_ms = int((time.perf_counter() - started_at) * 1000)
+        logger.exception(
+            "moderation_cleanup failed force=%s batch_size=%s duration_ms=%s",
+            force,
+            limit,
+            duration_ms,
+        )
         raise
+
+
+def run_scheduled_cleanup(force: bool = False):
+    stats = run_scheduled_cleanup_with_metrics(force=force)
+    return int(stats.get("rows_processed", 0))

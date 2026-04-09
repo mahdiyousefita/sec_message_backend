@@ -15,6 +15,7 @@ from minio.error import S3Error
 from werkzeug.http import http_date, parse_date
 
 from app.extensions.minio_client import get_minio_client
+from app.services import app_update_service
 
 main_bp = Blueprint("main", __name__)
 
@@ -34,6 +35,44 @@ def download_apk():
     return send_from_directory(
         release_dir, filename, as_attachment=True, download_name=filename
     )
+
+
+@main_bp.route("/api/app/version-check", methods=["POST"])
+def check_app_version():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "Invalid JSON body"}), 400
+
+    raw_version = data.get("version")
+    platform = data.get("platform") or "android"
+
+    if not isinstance(raw_version, str) or not raw_version.strip():
+        return jsonify({"error": "version is required"}), 400
+
+    try:
+        evaluation = app_update_service.evaluate_version(
+            version=raw_version,
+            platform=platform,
+        )
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+    download_url = app_update_service.resolve_download_url(
+        download_url=evaluation.get("download_url"),
+        request=request,
+        public_base_url=current_app.config.get("APP_PUBLIC_BASE_URL"),
+    )
+
+    payload = {
+        "action": evaluation["action"],
+        "is_blocking": bool(evaluation["is_blocking"]),
+        "title": evaluation.get("title"),
+        "message": evaluation.get("message"),
+        "download_url": download_url,
+        "normalized_version": evaluation.get("normalized_version"),
+        "latest_version": evaluation.get("latest_version"),
+    }
+    return jsonify(payload), 200
 
 
 def _is_media_not_found(error: S3Error) -> bool:

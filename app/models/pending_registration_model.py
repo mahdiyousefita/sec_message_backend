@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from app.db import db
 
@@ -22,6 +22,16 @@ class PendingRegistration(db.Model):
         onupdate=datetime.utcnow,
     )
 
+    @staticmethod
+    def _as_utc(value: datetime) -> datetime:
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
     def is_expired(self, now=None):
         now = now or datetime.utcnow()
-        return self.expires_at <= now
+        return self._as_utc(self.expires_at) <= self._as_utc(now)
+
+    def seconds_until_expiry(self, now=None) -> int:
+        now = now or datetime.utcnow()
+        return int((self._as_utc(self.expires_at) - self._as_utc(now)).total_seconds())

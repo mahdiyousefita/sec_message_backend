@@ -6,43 +6,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
-
-class FakeRedis:
-    def __init__(self):
-        self._sets = {}
-        self._lists = {}
-
-    def clear(self):
-        self._sets.clear()
-        self._lists.clear()
-
-    def sadd(self, key, value):
-        self._sets.setdefault(key, set()).add(value)
-
-    def smembers(self, key):
-        return self._sets.get(key, set())
-
-    def sismember(self, key, value):
-        return value in self._sets.get(key, set())
-
-    def rpush(self, key, value):
-        self._lists.setdefault(key, []).append(value)
-
-    def lpop(self, key):
-        values = self._lists.get(key, [])
-        if not values:
-            return None
-        return values.pop(0)
-
-    def lrange(self, key, start, end):
-        values = self._lists.get(key, [])
-        if end == -1:
-            end = len(values) - 1
-        return values[start:end + 1]
-
-    def delete(self, key):
-        self._lists.pop(key, None)
-        self._sets.pop(key, None)
+from tests.fake_redis import FakeRedis
 
 
 class TestApiRoutes(unittest.TestCase):
@@ -244,6 +208,104 @@ class TestApiRoutes(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.get_json()["error"], "Username already exists")
 
+    def test_admin_can_manage_app_update_settings(self):
+        self._register("admin")
+        self._make_admin("admin")
+        admin_headers = self._auth_header("admin")
+
+        settings_response = self.client.patch(
+            "/admin/api/app-update/settings",
+            headers=admin_headers,
+            json={
+                "force_update_below": "0.3.0",
+                "optional_update_below": "0.6.0",
+                "latest_version": "0.7.0",
+                "download_url": "/download/app",
+                "force_title": "Force Update",
+                "force_message": "Please update now.",
+                "optional_title": "Optional Update",
+                "optional_message": "You can update later.",
+            },
+        )
+        self.assertEqual(settings_response.status_code, 200)
+        self.assertEqual(
+            settings_response.get_json()["settings"]["download_url"],
+            "/download/app",
+        )
+        self.assertEqual(
+            settings_response.get_json()["settings"]["force_update_below"],
+            "0.3.0",
+        )
+
+        get_response = self.client.get(
+            "/admin/api/app-update/settings",
+            headers=admin_headers,
+        )
+        self.assertEqual(get_response.status_code, 200)
+        self.assertEqual(
+            get_response.get_json()["settings"]["optional_update_below"],
+            "0.6.0",
+        )
+        self.assertEqual(
+            get_response.get_json()["settings"]["force_message"],
+            "Please update now.",
+        )
+
+    def test_version_check_endpoint_returns_force_optional_and_none(self):
+        self._register("admin")
+        self._make_admin("admin")
+        admin_headers = self._auth_header("admin")
+
+        settings_response = self.client.patch(
+            "/admin/api/app-update/settings",
+            headers=admin_headers,
+            json={
+                "force_update_below": "0.3.0",
+                "optional_update_below": "0.6.0",
+                "latest_version": "0.7.0",
+                "download_url": "/download/app",
+            },
+        )
+        self.assertEqual(settings_response.status_code, 200)
+
+        force_response = self.client.post(
+            "/api/app/version-check",
+            json={"platform": "android", "version": "0.2.0"},
+        )
+        self.assertEqual(force_response.status_code, 200)
+        force_body = force_response.get_json()
+        self.assertEqual(force_body["action"], "force")
+        self.assertTrue(force_body["is_blocking"])
+
+        optional_response = self.client.post(
+            "/api/app/version-check",
+            json={"platform": "android", "version": "0.4.0"},
+        )
+        self.assertEqual(optional_response.status_code, 200)
+        optional_body = optional_response.get_json()
+        self.assertEqual(optional_body["action"], "optional")
+        self.assertFalse(optional_body["is_blocking"])
+        self.assertEqual(optional_body["normalized_version"], "0.4.0")
+        self.assertTrue(optional_body["download_url"].endswith("/download/app"))
+
+        optional_boundary_response = self.client.post(
+            "/api/app/version-check",
+            json={"platform": "android", "version": "0.6.0"},
+        )
+        self.assertEqual(optional_boundary_response.status_code, 200)
+        boundary_body = optional_boundary_response.get_json()
+        self.assertEqual(boundary_body["action"], "optional")
+        self.assertFalse(boundary_body["is_blocking"])
+
+        ok_response = self.client.post(
+            "/api/app/version-check",
+            json={"platform": "android", "version": "0.7.0"},
+        )
+        self.assertEqual(ok_response.status_code, 200)
+        ok_body = ok_response.get_json()
+        self.assertEqual(ok_body["action"], "none")
+        self.assertFalse(ok_body["is_blocking"])
+
     def test_cors_preflight_headers_are_not_added_by_app(self):
         response = self.client.open(
             "/api/contacts",
@@ -311,6 +373,240 @@ class TestApiRoutes(unittest.TestCase):
         self.assertIsNone(payload["posts"][0]["author"]["profile_image_url"])
         self.assertEqual(payload["posts"][0]["viewer_vote"], 0)
 
+    def test_list_posts_can_skip_total_count(self):
+        self._register("alice")
+        headers = self._auth_header("alice")
+
+        create_response = self.client.post(
+            "/api/posts",
+            json={"text": "skip total"},
+            headers=headers,
+        )
+        self.assertEqual(create_response.status_code, 201)
+
+        list_response = self.client.get("/api/posts?page=1&limit=10&include_total=false")
+        self.assertEqual(list_response.status_code, 200)
+        payload = list_response.get_json()
+        self.assertIsNone(payload["total"])
+        self.assertEqual(len(payload["posts"]), 1)
+        self.assertEqual(payload["posts"][0]["text"], "skip total")
+
+    def test_list_posts_rejects_invalid_include_total(self):
+        response = self.client.get("/api/posts?include_total=invalid")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.get_json()["error"], "include_total must be a boolean")
+
+    def test_get_single_post_by_id(self):
+        self._register("alice")
+        headers = self._auth_header("alice")
+
+        create_response = self.client.post(
+            "/api/posts",
+            json={"text": "single post lookup"},
+            headers=headers,
+        )
+        self.assertEqual(create_response.status_code, 201)
+        post_id = create_response.get_json()["post_id"]
+
+        detail_response = self.client.get(f"/api/posts/{post_id}", headers=headers)
+        self.assertEqual(detail_response.status_code, 200)
+        payload = detail_response.get_json()["post"]
+        self.assertEqual(payload["id"], post_id)
+        self.assertEqual(payload["text"], "single post lookup")
+        self.assertEqual(payload["author"]["username"], "alice")
+        self.assertEqual(payload["viewer_vote"], 0)
+
+    def test_get_single_post_by_id_respects_followers_only_visibility(self):
+        self._register("alice")
+        self._register("bob")
+        self._register("charlie")
+        alice_headers = self._auth_header("alice")
+        bob_headers = self._auth_header("bob")
+        charlie_headers = self._auth_header("charlie")
+
+        create_response = self.client.post(
+            "/api/posts",
+            json={"text": "private details", "followers_only": True},
+            headers=alice_headers,
+        )
+        self.assertEqual(create_response.status_code, 201)
+        post_id = create_response.get_json()["post_id"]
+
+        unauth_response = self.client.get(f"/api/posts/{post_id}")
+        self.assertEqual(unauth_response.status_code, 404)
+
+        non_follower_response = self.client.get(f"/api/posts/{post_id}", headers=charlie_headers)
+        self.assertEqual(non_follower_response.status_code, 404)
+
+        follow_response = self.client.post("/api/follows/alice", headers=bob_headers)
+        self.assertEqual(follow_response.status_code, 200)
+
+        follower_response = self.client.get(f"/api/posts/{post_id}", headers=bob_headers)
+        self.assertEqual(follower_response.status_code, 200)
+
+    def test_followers_only_posts_visible_only_to_author_followers_and_owner(self):
+        self._register("alice")
+        self._register("bob")
+        self._register("charlie")
+        alice_headers = self._auth_header("alice")
+        bob_headers = self._auth_header("bob")
+        charlie_headers = self._auth_header("charlie")
+
+        private_post = self.client.post(
+            "/api/posts",
+            json={"text": "private update", "followers_only": True},
+            headers=alice_headers,
+        )
+        self.assertEqual(private_post.status_code, 201)
+
+        public_post = self.client.post(
+            "/api/posts",
+            json={"text": "public update"},
+            headers=alice_headers,
+        )
+        self.assertEqual(public_post.status_code, 201)
+
+        unauth_feed = self.client.get("/api/posts")
+        self.assertEqual(unauth_feed.status_code, 200)
+        self.assertEqual(
+            [post["text"] for post in unauth_feed.get_json()["posts"]],
+            ["public update"],
+        )
+
+        charlie_feed = self.client.get("/api/posts", headers=charlie_headers)
+        self.assertEqual(charlie_feed.status_code, 200)
+        self.assertEqual(
+            [post["text"] for post in charlie_feed.get_json()["posts"]],
+            ["public update"],
+        )
+
+        follow_resp = self.client.post("/api/follows/alice", headers=bob_headers)
+        self.assertEqual(follow_resp.status_code, 200)
+        self.assertEqual(follow_resp.get_json()["message"], "Followed")
+
+        bob_feed = self.client.get("/api/posts", headers=bob_headers)
+        self.assertEqual(bob_feed.status_code, 200)
+        self.assertEqual(
+            [post["text"] for post in bob_feed.get_json()["posts"]],
+            ["public update", "private update"],
+        )
+
+        owner_feed = self.client.get("/api/posts", headers=alice_headers)
+        self.assertEqual(owner_feed.status_code, 200)
+        self.assertEqual(
+            [post["text"] for post in owner_feed.get_json()["posts"]],
+            ["public update", "private update"],
+        )
+
+    def test_followers_only_posts_are_filtered_in_profile_and_search_for_non_followers(self):
+        self._register("alice")
+        self._register("bob")
+        alice_headers = self._auth_header("alice")
+        bob_headers = self._auth_header("bob")
+
+        private_post = self.client.post(
+            "/api/posts",
+            json={"text": "alice private", "followers_only": True},
+            headers=alice_headers,
+        )
+        self.assertEqual(private_post.status_code, 201)
+
+        profile_before_follow = self.client.get("/api/profiles/alice/posts", headers=bob_headers)
+        self.assertEqual(profile_before_follow.status_code, 200)
+        self.assertEqual(profile_before_follow.get_json()["total"], 0)
+
+        search_before_follow = self.client.get("/api/search/posts?q=private", headers=bob_headers)
+        self.assertEqual(search_before_follow.status_code, 200)
+        self.assertEqual(search_before_follow.get_json()["total"], 0)
+
+        follow_resp = self.client.post("/api/follows/alice", headers=bob_headers)
+        self.assertEqual(follow_resp.status_code, 200)
+
+        profile_after_follow = self.client.get("/api/profiles/alice/posts", headers=bob_headers)
+        self.assertEqual(profile_after_follow.status_code, 200)
+        self.assertEqual(profile_after_follow.get_json()["total"], 1)
+
+        search_after_follow = self.client.get("/api/search/posts?q=private", headers=bob_headers)
+        self.assertEqual(search_after_follow.status_code, 200)
+        self.assertEqual(search_after_follow.get_json()["total"], 1)
+
+    def test_admin_posts_endpoint_lists_public_and_followers_only_posts(self):
+        self._register("admin")
+        self._register("alice")
+        self._register("bob")
+        self._make_admin("admin")
+        admin_headers = self._auth_header("admin")
+        alice_headers = self._auth_header("alice")
+        bob_headers = self._auth_header("bob")
+
+        self.assertEqual(
+            self.client.post(
+                "/api/posts",
+                json={"text": "alice private", "followers_only": True},
+                headers=alice_headers,
+            ).status_code,
+            201,
+        )
+        self.assertEqual(
+            self.client.post(
+                "/api/posts",
+                json={"text": "alice public"},
+                headers=alice_headers,
+            ).status_code,
+            201,
+        )
+        self.assertEqual(
+            self.client.post(
+                "/api/posts",
+                json={"text": "bob public"},
+                headers=bob_headers,
+            ).status_code,
+            201,
+        )
+
+        admin_posts = self.client.get("/admin/api/posts", headers=admin_headers)
+        self.assertEqual(admin_posts.status_code, 200)
+        payload = admin_posts.get_json()
+        self.assertEqual(payload["total"], 3)
+        self.assertEqual(len(payload["posts"]), 3)
+        self.assertTrue(any(post["followers_only"] for post in payload["posts"]))
+
+    def test_admin_post_detail_includes_media_url_for_rendering(self):
+        self._register("admin")
+        self._register("alice")
+        self._make_admin("admin")
+        admin_headers = self._auth_header("admin")
+        alice_headers = self._auth_header("alice")
+
+        class FakeMinio:
+            def bucket_exists(self, *args, **kwargs):
+                return True
+
+            def put_object(self, **kwargs):
+                return None
+
+        with patch("app.services.post_service.get_minio_client", return_value=FakeMinio()):
+            create_post = self.client.post(
+                "/api/posts",
+                data={
+                    "text": "post with media",
+                    "media": (io.BytesIO(b"fake-image-bytes"), "pic.webp", "image/webp"),
+                },
+                headers=alice_headers,
+                content_type="multipart/form-data",
+            )
+
+        self.assertEqual(create_post.status_code, 201)
+        post_id = create_post.get_json()["post_id"]
+
+        detail = self.client.get(f"/admin/api/posts/{post_id}", headers=admin_headers)
+        self.assertEqual(detail.status_code, 200)
+        payload = detail.get_json()
+        self.assertEqual(payload["post"]["id"], post_id)
+        self.assertEqual(len(payload["post"]["media"]), 1)
+        self.assertIn("url", payload["post"]["media"][0])
+        self.assertIn("/media/posts/", payload["post"]["media"][0]["url"])
+
     def test_create_post_with_image_media_multipart(self):
         self._register("alice")
         headers = self._auth_header("alice")
@@ -341,6 +637,211 @@ class TestApiRoutes(unittest.TestCase):
         self.assertEqual(list_resp.status_code, 200)
         media_url = list_resp.get_json()["posts"][0]["media"][0]["url"]
         self.assertIn("/media/posts/", media_url)
+
+    def test_create_music_post_allows_empty_text_and_returns_track_metadata(self):
+        self._register("alice")
+        headers = self._auth_header("alice")
+
+        class FakeMinio:
+            def bucket_exists(self, *args, **kwargs):
+                return True
+
+            def put_object(self, **kwargs):
+                return None
+
+        with patch("app.services.post_service.get_minio_client", return_value=FakeMinio()):
+            data = {
+                "text": "",
+                "media": (io.BytesIO(b"fake-audio-bytes"), "night_drive.mp3", "audio/mpeg"),
+            }
+            create_resp = self.client.post(
+                "/api/posts",
+                data=data,
+                headers=headers,
+                content_type="multipart/form-data",
+            )
+
+        self.assertEqual(create_resp.status_code, 201)
+        list_resp = self.client.get("/api/posts", headers=headers)
+        self.assertEqual(list_resp.status_code, 200)
+        payload = list_resp.get_json()["posts"][0]
+        self.assertEqual(payload["text"], "")
+        self.assertEqual(len(payload["media"]), 1)
+        media = payload["media"][0]
+        self.assertEqual(media["mime_type"], "audio/mpeg")
+        self.assertEqual(media["display_name"], "night_drive.mp3")
+        self.assertEqual(media["title"], "night_drive")
+        self.assertIsNone(media["artist"])
+
+    def test_create_music_post_rejects_more_than_one_track(self):
+        self._register("alice")
+        headers = self._auth_header("alice")
+
+        class FakeMinio:
+            def bucket_exists(self, *args, **kwargs):
+                return True
+
+            def put_object(self, **kwargs):
+                return None
+
+        with patch("app.services.post_service.get_minio_client", return_value=FakeMinio()):
+            data = {
+                "text": "my mix",
+                "media": [
+                    (io.BytesIO(b"track-one"), "one.mp3", "audio/mpeg"),
+                    (io.BytesIO(b"track-two"), "two.mp3", "audio/mpeg"),
+                ],
+            }
+            resp = self.client.post(
+                "/api/posts",
+                data=data,
+                headers=headers,
+                content_type="multipart/form-data",
+            )
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.get_json()["error"], "Music posts can contain only one audio file")
+
+    def test_playlist_adds_music_track_and_lists_it(self):
+        self._register("alice")
+        headers = self._auth_header("alice")
+
+        class FakeMinio:
+            def bucket_exists(self, *args, **kwargs):
+                return True
+
+            def put_object(self, **kwargs):
+                return None
+
+        with patch("app.services.post_service.get_minio_client", return_value=FakeMinio()):
+            create_resp = self.client.post(
+                "/api/posts",
+                data={
+                    "text": "",
+                    "media": (io.BytesIO(b"fake-audio-bytes"), "sunrise.mp3", "audio/mpeg"),
+                },
+                headers=headers,
+                content_type="multipart/form-data",
+            )
+        self.assertEqual(create_resp.status_code, 201)
+
+        posts_resp = self.client.get("/api/posts", headers=headers)
+        self.assertEqual(posts_resp.status_code, 200)
+        media_payload = posts_resp.get_json()["posts"][0]["media"][0]
+
+        add_resp = self.client.post(
+            "/api/playlists/tracks",
+            headers=headers,
+            json={"media_id": media_payload["id"]},
+        )
+        self.assertEqual(add_resp.status_code, 201)
+        add_body = add_resp.get_json()
+        self.assertTrue(add_body["created"])
+        self.assertEqual(add_body["track"]["media_id"], media_payload["id"])
+        self.assertEqual(add_body["track"]["mime_type"], "audio/mpeg")
+
+        list_resp = self.client.get("/api/playlists/tracks?page=1&limit=20", headers=headers)
+        self.assertEqual(list_resp.status_code, 200)
+        list_body = list_resp.get_json()
+        self.assertEqual(list_body["total"], 1)
+        self.assertEqual(len(list_body["tracks"]), 1)
+        self.assertEqual(list_body["tracks"][0]["title"], "sunrise")
+        self.assertIn("/media/posts/", list_body["tracks"][0]["track_url"])
+
+    def test_playlist_add_track_is_idempotent(self):
+        self._register("alice")
+        headers = self._auth_header("alice")
+
+        class FakeMinio:
+            def bucket_exists(self, *args, **kwargs):
+                return True
+
+            def put_object(self, **kwargs):
+                return None
+
+        with patch("app.services.post_service.get_minio_client", return_value=FakeMinio()):
+            create_resp = self.client.post(
+                "/api/posts",
+                data={
+                    "text": "",
+                    "media": (io.BytesIO(b"fake-audio-bytes"), "repeat.mp3", "audio/mpeg"),
+                },
+                headers=headers,
+                content_type="multipart/form-data",
+            )
+        self.assertEqual(create_resp.status_code, 201)
+
+        posts_resp = self.client.get("/api/posts", headers=headers)
+        media_id = posts_resp.get_json()["posts"][0]["media"][0]["id"]
+
+        first_add = self.client.post(
+            "/api/playlists/tracks",
+            headers=headers,
+            json={"media_id": media_id},
+        )
+        self.assertEqual(first_add.status_code, 201)
+        self.assertTrue(first_add.get_json()["created"])
+
+        second_add = self.client.post(
+            "/api/playlists/tracks",
+            headers=headers,
+            json={"media_id": media_id},
+        )
+        self.assertEqual(second_add.status_code, 200)
+        self.assertFalse(second_add.get_json()["created"])
+
+        list_resp = self.client.get("/api/playlists/tracks", headers=headers)
+        self.assertEqual(list_resp.status_code, 200)
+        self.assertEqual(list_resp.get_json()["total"], 1)
+
+    def test_playlist_rejects_non_audio_media(self):
+        self._register("alice")
+        headers = self._auth_header("alice")
+
+        class FakeMinio:
+            def bucket_exists(self, *args, **kwargs):
+                return True
+
+            def put_object(self, **kwargs):
+                return None
+
+        with patch("app.services.post_service.get_minio_client", return_value=FakeMinio()):
+            create_resp = self.client.post(
+                "/api/posts",
+                data={
+                    "text": "image post",
+                    "media": (io.BytesIO(b"fake-image"), "pic.webp", "image/webp"),
+                },
+                headers=headers,
+                content_type="multipart/form-data",
+            )
+        self.assertEqual(create_resp.status_code, 201)
+
+        posts_resp = self.client.get("/api/posts", headers=headers)
+        media_id = posts_resp.get_json()["posts"][0]["media"][0]["id"]
+
+        add_resp = self.client.post(
+            "/api/playlists/tracks",
+            headers=headers,
+            json={"media_id": media_id},
+        )
+        self.assertEqual(add_resp.status_code, 400)
+        self.assertEqual(
+            add_resp.get_json()["error"],
+            "Only audio tracks can be added to playlists",
+        )
+
+    def test_create_post_requires_text_when_not_music_post(self):
+        self._register("alice")
+        headers = self._auth_header("alice")
+
+        response = self.client.post(
+            "/api/posts",
+            json={"text": "   "},
+            headers=headers,
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.get_json()["error"], "Text is required")
 
     def test_media_route_streams_object_from_minio(self):
         class FakeStat:
@@ -619,6 +1120,266 @@ class TestApiRoutes(unittest.TestCase):
         self.assertEqual(comments[0]["replies"][0]["author"]["name"], "alice")
         self.assertIsNone(comments[0]["replies"][0]["author"]["profile_image_url"])
 
+    def test_list_comments_orders_by_score_then_newest(self):
+        self._register("alice")
+        headers = self._auth_header("alice")
+
+        create_post = self.client.post(
+            "/api/posts",
+            json={"text": "post with sorted comments"},
+            headers=headers,
+        )
+        post_id = create_post.get_json()["post_id"]
+
+        root_a = self.client.post(
+            f"/api/posts/{post_id}/comments",
+            json={"text": "root low old"},
+            headers=headers,
+        ).get_json()["id"]
+        root_b = self.client.post(
+            f"/api/posts/{post_id}/comments",
+            json={"text": "root low new"},
+            headers=headers,
+        ).get_json()["id"]
+        root_c = self.client.post(
+            f"/api/posts/{post_id}/comments",
+            json={"text": "root high"},
+            headers=headers,
+        ).get_json()["id"]
+
+        reply_a = self.client.post(
+            f"/api/posts/{post_id}/comments",
+            json={"text": "reply low old", "parent_id": root_c},
+            headers=headers,
+        ).get_json()["id"]
+        reply_b = self.client.post(
+            f"/api/posts/{post_id}/comments",
+            json={"text": "reply low new", "parent_id": root_c},
+            headers=headers,
+        ).get_json()["id"]
+        reply_c = self.client.post(
+            f"/api/posts/{post_id}/comments",
+            json={"text": "reply high", "parent_id": root_c},
+            headers=headers,
+        ).get_json()["id"]
+
+        with self.app.app_context():
+            now = datetime.utcnow()
+            comment_updates = {
+                root_a: (0, now - timedelta(minutes=30)),
+                root_b: (0, now - timedelta(minutes=10)),
+                root_c: (2, now - timedelta(minutes=40)),
+                reply_a: (1, now - timedelta(minutes=20)),
+                reply_b: (1, now - timedelta(minutes=5)),
+                reply_c: (3, now - timedelta(minutes=60)),
+            }
+            for comment_id, (score, created_at) in comment_updates.items():
+                comment = self.Comment.query.get(comment_id)
+                comment.score = score
+                comment.created_at = created_at
+            self.db.session.commit()
+
+        list_resp = self.client.get(f"/api/posts/{post_id}/comments")
+        self.assertEqual(list_resp.status_code, 200)
+        comments = list_resp.get_json()
+        self.assertEqual([c["id"] for c in comments], [root_c, root_b, root_a])
+        self.assertEqual(
+            [c["id"] for c in comments[0]["replies"]],
+            [reply_c, reply_b, reply_a],
+        )
+
+    def test_activity_notification_comment_uses_full_comment_text(self):
+        self._register("alice")
+        self._register("bob")
+        alice_headers = self._auth_header("alice")
+        bob_headers = self._auth_header("bob")
+
+        post_resp = self.client.post(
+            "/api/posts",
+            json={"text": "post for activity notification"},
+            headers=alice_headers,
+        )
+        post_id = post_resp.get_json()["post_id"]
+
+        long_comment = "long-reply-" * 30
+        comment_resp = self.client.post(
+            f"/api/posts/{post_id}/comments",
+            json={"text": long_comment},
+            headers=bob_headers,
+        )
+        self.assertEqual(comment_resp.status_code, 201)
+        self.assertGreater(len(long_comment), 120)
+
+        notifications_resp = self.client.get(
+            "/api/activity-notifications?page=1&limit=20",
+            headers=alice_headers,
+        )
+        self.assertEqual(notifications_resp.status_code, 200)
+        payload = notifications_resp.get_json()
+        self.assertEqual(payload["total"], 1)
+        notification = payload["notifications"][0]
+        self.assertEqual(notification["kind"], "comment")
+        self.assertEqual(notification["extra"]["comment_preview"], long_comment)
+
+    def test_activity_notification_comment_reply_uses_full_reply_text(self):
+        self._register("alice")
+        self._register("bob")
+        alice_headers = self._auth_header("alice")
+        bob_headers = self._auth_header("bob")
+
+        post_resp = self.client.post(
+            "/api/posts",
+            json={"text": "post for reply notification"},
+            headers=alice_headers,
+        )
+        post_id = post_resp.get_json()["post_id"]
+
+        root_comment_resp = self.client.post(
+            f"/api/posts/{post_id}/comments",
+            json={"text": "alice root comment"},
+            headers=alice_headers,
+        )
+        self.assertEqual(root_comment_resp.status_code, 201)
+        root_comment_id = root_comment_resp.get_json()["id"]
+
+        long_reply = "very-long-nested-reply-" * 20
+        reply_resp = self.client.post(
+            f"/api/posts/{post_id}/comments",
+            json={"text": long_reply, "parent_id": root_comment_id},
+            headers=bob_headers,
+        )
+        self.assertEqual(reply_resp.status_code, 201)
+        self.assertGreater(len(long_reply), 120)
+
+        notifications_resp = self.client.get(
+            "/api/activity-notifications?page=1&limit=20",
+            headers=alice_headers,
+        )
+        self.assertEqual(notifications_resp.status_code, 200)
+        payload = notifications_resp.get_json()
+        self.assertEqual(payload["total"], 1)
+        notification = payload["notifications"][0]
+        self.assertEqual(notification["kind"], "comment_reply")
+        self.assertEqual(notification["extra"]["comment_preview"], long_reply)
+
+    def test_delete_own_post_removes_post_and_related_comments(self):
+        self._register("alice")
+        self._register("bob")
+        alice_headers = self._auth_header("alice")
+        bob_headers = self._auth_header("bob")
+
+        create_post_resp = self.client.post(
+            "/api/posts",
+            json={"text": "post to delete"},
+            headers=alice_headers,
+        )
+        post_id = create_post_resp.get_json()["post_id"]
+
+        create_comment_resp = self.client.post(
+            f"/api/posts/{post_id}/comments",
+            json={"text": "bob comment"},
+            headers=bob_headers,
+        )
+        self.assertEqual(create_comment_resp.status_code, 201)
+
+        delete_resp = self.client.delete(
+            f"/api/posts/{post_id}",
+            headers=alice_headers,
+        )
+        self.assertEqual(delete_resp.status_code, 200)
+        self.assertEqual(delete_resp.get_json()["message"], "Post deleted")
+
+        posts_resp = self.client.get("/api/posts", headers=alice_headers)
+        self.assertEqual(posts_resp.status_code, 200)
+        self.assertEqual(posts_resp.get_json()["total"], 0)
+
+        comments_resp = self.client.get(f"/api/posts/{post_id}/comments")
+        self.assertEqual(comments_resp.status_code, 404)
+        self.assertEqual(comments_resp.get_json()["error"], "Post not found")
+
+    def test_delete_post_rejects_non_owner(self):
+        self._register("alice")
+        self._register("bob")
+        alice_headers = self._auth_header("alice")
+        bob_headers = self._auth_header("bob")
+
+        create_post_resp = self.client.post(
+            "/api/posts",
+            json={"text": "alice post"},
+            headers=alice_headers,
+        )
+        post_id = create_post_resp.get_json()["post_id"]
+
+        delete_resp = self.client.delete(
+            f"/api/posts/{post_id}",
+            headers=bob_headers,
+        )
+        self.assertEqual(delete_resp.status_code, 403)
+        self.assertEqual(
+            delete_resp.get_json()["error"],
+            "You can only delete your own posts",
+        )
+
+    def test_delete_own_comment(self):
+        self._register("alice")
+        headers = self._auth_header("alice")
+
+        create_post_resp = self.client.post(
+            "/api/posts",
+            json={"text": "post with deletable comment"},
+            headers=headers,
+        )
+        post_id = create_post_resp.get_json()["post_id"]
+
+        comment_resp = self.client.post(
+            f"/api/posts/{post_id}/comments",
+            json={"text": "comment to delete"},
+            headers=headers,
+        )
+        self.assertEqual(comment_resp.status_code, 201)
+        comment_id = comment_resp.get_json()["id"]
+
+        delete_resp = self.client.delete(
+            f"/api/comments/{comment_id}",
+            headers=headers,
+        )
+        self.assertEqual(delete_resp.status_code, 200)
+        self.assertEqual(delete_resp.get_json()["message"], "Comment deleted")
+
+        comments_resp = self.client.get(f"/api/posts/{post_id}/comments")
+        self.assertEqual(comments_resp.status_code, 200)
+        self.assertEqual(comments_resp.get_json(), [])
+
+    def test_delete_comment_rejects_non_owner(self):
+        self._register("alice")
+        self._register("bob")
+        alice_headers = self._auth_header("alice")
+        bob_headers = self._auth_header("bob")
+
+        create_post_resp = self.client.post(
+            "/api/posts",
+            json={"text": "post for comment ownership"},
+            headers=alice_headers,
+        )
+        post_id = create_post_resp.get_json()["post_id"]
+
+        comment_resp = self.client.post(
+            f"/api/posts/{post_id}/comments",
+            json={"text": "alice comment"},
+            headers=alice_headers,
+        )
+        comment_id = comment_resp.get_json()["id"]
+
+        delete_resp = self.client.delete(
+            f"/api/comments/{comment_id}",
+            headers=bob_headers,
+        )
+        self.assertEqual(delete_resp.status_code, 403)
+        self.assertEqual(
+            delete_resp.get_json()["error"],
+            "You can only delete your own comments",
+        )
+
     def test_vote_route_duplicate_vote_is_idempotent(self):
         self._register("alice")
         headers = self._auth_header("alice")
@@ -686,6 +1447,66 @@ class TestApiRoutes(unittest.TestCase):
         )
         self.assertEqual(charlie_key.status_code, 403)
         self.assertEqual(charlie_key.get_json()["error"], "Not in your contacts")
+
+    def test_detailed_contacts_includes_group_metadata(self):
+        self._register("alice")
+        self._register("bob")
+        alice_headers = self._auth_header("alice")
+        bob_headers = self._auth_header("bob")
+
+        self.assertEqual(
+            self.client.post("/api/follows/bob", headers=alice_headers).status_code,
+            200,
+        )
+        self.assertEqual(
+            self.client.post("/api/follows/alice", headers=bob_headers).status_code,
+            200,
+        )
+
+        create_group = self.client.post(
+            "/api/groups",
+            headers=alice_headers,
+            json={
+                "name": "close-friends",
+                "members": ["bob"],
+            },
+        )
+        self.assertEqual(create_group.status_code, 201)
+
+        detailed_contacts = self.client.get(
+            "/api/contacts?detailed=true",
+            headers=alice_headers,
+        )
+        self.assertEqual(detailed_contacts.status_code, 200)
+        payload = detailed_contacts.get_json()
+        self.assertIn("groups", payload)
+        self.assertEqual(len(payload["groups"]), 1)
+        group_payload = payload["groups"][0]
+        self.assertEqual(group_payload["name"], "close-friends")
+        self.assertEqual(group_payload["creator"]["username"], "alice")
+        self.assertEqual(group_payload["member_count"], 2)
+
+    def test_public_key_access_allowed_for_existing_conversation(self):
+        self._register("alice", public_key="alice_key")
+        self._register("charlie", public_key="charlie_key")
+        alice_headers = self._auth_header("alice")
+
+        with self.app.app_context():
+            from app.services import message_service
+
+            message_service.send_message(
+                sender="charlie",
+                recipient="alice",
+                message="enc-msg",
+                encrypted_key="enc-key",
+            )
+
+        charlie_key = self.client.get(
+            "/api/contacts/charlie/public-key",
+            headers=alice_headers,
+        )
+        self.assertEqual(charlie_key.status_code, 200)
+        self.assertEqual(charlie_key.get_json()["public_key"], "charlie_key")
 
     def test_profile_follow_and_unfollow_flow(self):
         self._register("alice")
@@ -1398,6 +2219,46 @@ class TestApiRoutes(unittest.TestCase):
 
             self.assertIsNone(Post.query.get(post_id))
             self.assertIsNone(PostReport.query.get(report_id))
+
+    def test_report_cleanup_honors_batch_size_limits(self):
+        with self.app.app_context():
+            from app.models.user_model import User
+            from app.services import report_service
+
+            due_at = datetime.utcnow() - timedelta(seconds=1)
+            for idx in range(3):
+                self.db.session.add(
+                    User(
+                        username=f"suspended_{idx}",
+                        password_hash="hash",
+                        public_key=f"pk_{idx}",
+                        is_suspended=True,
+                        purge_after=due_at,
+                    )
+                )
+            self.db.session.commit()
+
+            first_cycle = report_service.run_scheduled_cleanup_with_metrics(
+                force=True,
+                batch_size=2,
+            )
+            self.assertEqual(first_cycle["rows_processed"], 2)
+            self.assertEqual(first_cycle["users_deleted"], 2)
+            self.assertEqual(
+                User.query.filter(User.username.like("suspended_%")).count(),
+                1,
+            )
+
+            second_cycle = report_service.run_scheduled_cleanup_with_metrics(
+                force=True,
+                batch_size=2,
+            )
+            self.assertEqual(second_cycle["rows_processed"], 1)
+            self.assertEqual(second_cycle["users_deleted"], 1)
+            self.assertEqual(
+                User.query.filter(User.username.like("suspended_%")).count(),
+                0,
+            )
 
 
     def test_message_attachment_upload_success(self):
