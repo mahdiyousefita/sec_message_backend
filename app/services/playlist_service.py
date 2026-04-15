@@ -56,8 +56,8 @@ def _serialize_track(entry, media: Media):
         title = "Music track"
 
     artist = (media.artist or "").strip() or None
-    if artist is None and display_name:
-        artist = display_name
+    if artist and artist.lower() == title.lower():
+        artist = None
 
     return {
         "id": entry.id,
@@ -133,3 +133,24 @@ def track_exists_in_user_playlist(username: str, track_url: str) -> bool:
         user_id=user.id,
         object_name=object_name,
     )
+
+
+def remove_track_by_username(username: str, track_id: int):
+    user = user_repository.get_by_username(username)
+    if not user or getattr(user, "is_suspended", False):
+        raise ValueError("User not found")
+
+    normalized_track_id = int(track_id or 0)
+    if normalized_track_id <= 0:
+        raise ValueError("track_id must be a positive integer")
+
+    removed = playlist_repository.remove_user_track_by_id(
+        user_id=user.id,
+        track_id=normalized_track_id,
+    )
+    if not removed:
+        raise ValueError("Playlist track not found")
+
+    return {
+        "message": "Track removed from playlist",
+    }

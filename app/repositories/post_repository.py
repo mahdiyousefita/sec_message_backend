@@ -3,7 +3,12 @@ from app.db import db
 from app.models.user_model import User
 
 
-def create_post_by_username(username, text, followers_only=False):
+def create_post_by_username(
+    username,
+    text,
+    followers_only=False,
+    quoted_post_id=None,
+):
     user = User.query.filter_by(username=username).first()
     if not user:
         raise ValueError("User not found")
@@ -14,6 +19,7 @@ def create_post_by_username(username, text, followers_only=False):
         author_id=user.id,
         text=text,
         followers_only=bool(followers_only),
+        quoted_post_id=quoted_post_id,
     )
     db.session.add(post)
     db.session.flush()

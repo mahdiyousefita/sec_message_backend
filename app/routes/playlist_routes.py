@@ -75,3 +75,23 @@ def check_playlist_track_exists():
         return jsonify({"error": str(e)}), 404
 
     return jsonify({"exists": exists}), 200
+
+
+@playlist_bp.route("/playlists/tracks/<int:track_id>", methods=["DELETE"])
+@jwt_required()
+def delete_playlist_track(track_id: int):
+    requester = get_jwt_identity()
+    try:
+        payload = playlist_service.remove_track_by_username(
+            username=requester,
+            track_id=track_id,
+        )
+    except ValueError as e:
+        message = str(e)
+        if message == "Playlist track not found":
+            return jsonify({"error": message}), 404
+        if message == "track_id must be a positive integer":
+            return jsonify({"error": message}), 400
+        return jsonify({"error": message}), 404
+
+    return jsonify(payload), 200

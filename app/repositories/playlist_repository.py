@@ -53,3 +53,16 @@ def user_track_exists_by_object_name(user_id: int, object_name: str) -> bool:
         .first()
     )
     return exists_row is not None
+
+
+def remove_user_track_by_id(user_id: int, track_id: int) -> bool:
+    entry = PlaylistTrack.query.filter_by(
+        id=track_id,
+        user_id=user_id,
+    ).first()
+    if not entry:
+        return False
+
+    db.session.delete(entry)
+    db.session.commit()
+    return True

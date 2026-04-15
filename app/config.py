@@ -215,6 +215,33 @@ class Config:
         _env_float("ASYNC_TASK_ENQUEUE_CONNECT_TIMEOUT_SECONDS", 0.75),
     )
 
+    # Activity engagement milestones (likes/comments on your post)
+    ACTIVITY_MILESTONE_ENABLED = _env_bool("ACTIVITY_MILESTONE_ENABLED", True)
+    ACTIVITY_MILESTONE_ACTIVE_USERS_WINDOW_DAYS = max(
+        1,
+        _env_int("ACTIVITY_MILESTONE_ACTIVE_USERS_WINDOW_DAYS", 7),
+    )
+    ACTIVITY_MILESTONE_ACTIVE_USERS_CACHE_TTL_SECONDS = max(
+        0,
+        _env_int("ACTIVITY_MILESTONE_ACTIVE_USERS_CACHE_TTL_SECONDS", 300),
+    )
+    ACTIVITY_MILESTONE_LIKE_PERCENT = min(
+        100,
+        max(1, _env_int("ACTIVITY_MILESTONE_LIKE_PERCENT", 10)),
+    )
+    ACTIVITY_MILESTONE_COMMENT_PERCENT = min(
+        100,
+        max(1, _env_int("ACTIVITY_MILESTONE_COMMENT_PERCENT", 5)),
+    )
+    ACTIVITY_MILESTONE_MIN_LIKES = max(
+        1,
+        _env_int("ACTIVITY_MILESTONE_MIN_LIKES", 5),
+    )
+    ACTIVITY_MILESTONE_MIN_COMMENTERS = max(
+        1,
+        _env_int("ACTIVITY_MILESTONE_MIN_COMMENTERS", 3),
+    )
+
     # Moderation/reporting retention policy
     MODERATION_SOFT_DELETE_DAYS = int(
         os.getenv("MODERATION_SOFT_DELETE_DAYS", "7")

@@ -283,6 +283,7 @@ def admin_get_post(post_id):
         "post": {
             "id": post.id,
             "text": post.text,
+            "quoted_post_id": post.quoted_post_id,
             "author": author.username if author else f"user-{post.author_id}",
             "created_at": post.created_at.isoformat(),
             "followers_only": bool(getattr(post, "followers_only", False)),
@@ -323,6 +324,12 @@ def admin_delete_post(post_id):
     Vote.query.filter(
         (Vote.target_type == "post") & (Vote.target_id == post.id)
     ).delete()
+    Post.query.filter(
+        Post.quoted_post_id == post.id
+    ).update(
+        {Post.quoted_post_id: None},
+        synchronize_session=False,
+    )
     Media.query.filter_by(post_id=post.id).delete()
     db.session.delete(post)
     db.session.commit()
@@ -373,6 +380,12 @@ def admin_delete_user(user_id):
         Vote.query.filter(
             (Vote.target_type == "post") & (Vote.target_id == post.id)
         ).delete()
+        Post.query.filter(
+            Post.quoted_post_id == post.id
+        ).update(
+            {Post.quoted_post_id: None},
+            synchronize_session=False,
+        )
         Media.query.filter_by(post_id=post.id).delete()
         db.session.delete(post)
 

@@ -435,6 +435,12 @@ def _hard_delete_post(post: Post):
         Vote.target_type == "post",
         Vote.target_id == post.id,
     ).delete(synchronize_session=False)
+    Post.query.filter(
+        Post.quoted_post_id == post.id
+    ).update(
+        {Post.quoted_post_id: None},
+        synchronize_session=False,
+    )
     Media.query.filter_by(post_id=post.id).delete(synchronize_session=False)
     PostReport.query.filter_by(post_id=post.id).delete(synchronize_session=False)
     db.session.delete(post)

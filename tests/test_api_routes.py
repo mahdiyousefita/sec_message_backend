@@ -373,6 +373,58 @@ class TestApiRoutes(unittest.TestCase):
         self.assertIsNone(payload["posts"][0]["author"]["profile_image_url"])
         self.assertEqual(payload["posts"][0]["viewer_vote"], 0)
 
+    def test_create_quote_post_includes_quoted_preview_in_feed_and_detail(self):
+        self._register("alice")
+        self._register("bob")
+        alice_headers = self._auth_header("alice")
+        bob_headers = self._auth_header("bob")
+
+        original_response = self.client.post(
+            "/api/posts",
+            json={"text": "original from alice"},
+            headers=alice_headers,
+        )
+        self.assertEqual(original_response.status_code, 201)
+        original_post_id = original_response.get_json()["post_id"]
+
+        quote_response = self.client.post(
+            "/api/posts",
+            json={"text": "bob is quoting this", "quoted_post_id": original_post_id},
+            headers=bob_headers,
+        )
+        self.assertEqual(quote_response.status_code, 201)
+        quote_post_id = quote_response.get_json()["post_id"]
+
+        feed_response = self.client.get("/api/posts", headers=bob_headers)
+        self.assertEqual(feed_response.status_code, 200)
+        feed_posts = feed_response.get_json()["posts"]
+        quote_payload = next((post for post in feed_posts if post["id"] == quote_post_id), None)
+        self.assertIsNotNone(quote_payload)
+        self.assertEqual(quote_payload["quoted_post_id"], original_post_id)
+        self.assertIsNotNone(quote_payload["quoted_post"])
+        self.assertEqual(quote_payload["quoted_post"]["id"], original_post_id)
+        self.assertEqual(quote_payload["quoted_post"]["author"]["username"], "alice")
+        self.assertEqual(quote_payload["quoted_post"]["text"], "original from alice")
+
+        detail_response = self.client.get(f"/api/posts/{quote_post_id}", headers=bob_headers)
+        self.assertEqual(detail_response.status_code, 200)
+        detail_payload = detail_response.get_json()["post"]
+        self.assertEqual(detail_payload["quoted_post_id"], original_post_id)
+        self.assertIsNotNone(detail_payload["quoted_post"])
+        self.assertEqual(detail_payload["quoted_post"]["id"], original_post_id)
+
+    def test_create_quote_post_rejects_unknown_post_id(self):
+        self._register("alice")
+        headers = self._auth_header("alice")
+
+        response = self.client.post(
+            "/api/posts",
+            json={"text": "quote invalid", "quoted_post_id": 999999},
+            headers=headers,
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.get_json()["error"], "Quoted post not found")
+
     def test_list_posts_can_skip_total_count(self):
         self._register("alice")
         headers = self._auth_header("alice")
@@ -673,6 +725,68 @@ class TestApiRoutes(unittest.TestCase):
         self.assertEqual(media["title"], "night_drive")
         self.assertIsNone(media["artist"])
 
+    def test_create_music_post_uses_client_track_metadata_when_provided(self):
+        self._register("alice")
+        headers = self._auth_header("alice")
+
+        class FakeMinio:
+            def bucket_exists(self, *args, **kwargs):
+                return True
+
+            def put_object(self, **kwargs):
+                return None
+
+        with patch("app.services.post_service.get_minio_client", return_value=FakeMinio()):
+            data = {
+                "text": "",
+                "track_title": "After Hours",
+                "track_artist": "The Weeknd",
+                "media": (io.BytesIO(b"fake-audio-bytes"), "raw_recording_001.mp3", "audio/mpeg"),
+            }
+            create_resp = self.client.post(
+                "/api/posts",
+                data=data,
+                headers=headers,
+                content_type="multipart/form-data",
+            )
+
+        self.assertEqual(create_resp.status_code, 201)
+        list_resp = self.client.get("/api/posts", headers=headers)
+        self.assertEqual(list_resp.status_code, 200)
+        media = list_resp.get_json()["posts"][0]["media"][0]
+        self.assertEqual(media["title"], "After Hours")
+        self.assertEqual(media["artist"], "The Weeknd")
+
+    def test_create_music_post_parses_artist_and_title_from_file_name(self):
+        self._register("alice")
+        headers = self._auth_header("alice")
+
+        class FakeMinio:
+            def bucket_exists(self, *args, **kwargs):
+                return True
+
+            def put_object(self, **kwargs):
+                return None
+
+        with patch("app.services.post_service.get_minio_client", return_value=FakeMinio()):
+            data = {
+                "text": "",
+                "media": (io.BytesIO(b"fake-audio-bytes"), "Daft Punk - One More Time.mp3", "audio/mpeg"),
+            }
+            create_resp = self.client.post(
+                "/api/posts",
+                data=data,
+                headers=headers,
+                content_type="multipart/form-data",
+            )
+
+        self.assertEqual(create_resp.status_code, 201)
+        list_resp = self.client.get("/api/posts", headers=headers)
+        self.assertEqual(list_resp.status_code, 200)
+        media = list_resp.get_json()["posts"][0]["media"][0]
+        self.assertEqual(media["title"], "One More Time")
+        self.assertEqual(media["artist"], "Daft Punk")
+
     def test_create_music_post_rejects_more_than_one_track(self):
         self._register("alice")
         headers = self._auth_header("alice")
@@ -740,6 +854,11 @@ class TestApiRoutes(unittest.TestCase):
         self.assertEqual(add_body["track"]["media_id"], media_payload["id"])
         self.assertEqual(add_body["track"]["mime_type"], "audio/mpeg")
 
+        refreshed_posts_resp = self.client.get("/api/posts", headers=headers)
+        refreshed_media_payload = refreshed_posts_resp.get_json()["posts"][0]["media"][0]
+        self.assertEqual(len(refreshed_media_payload["playlist_adders"]), 1)
+        self.assertEqual(refreshed_media_payload["playlist_adders"][0]["username"], "alice")
+
         list_resp = self.client.get("/api/playlists/tracks?page=1&limit=20", headers=headers)
         self.assertEqual(list_resp.status_code, 200)
         list_body = list_resp.get_json()
@@ -793,6 +912,48 @@ class TestApiRoutes(unittest.TestCase):
         list_resp = self.client.get("/api/playlists/tracks", headers=headers)
         self.assertEqual(list_resp.status_code, 200)
         self.assertEqual(list_resp.get_json()["total"], 1)
+
+    def test_playlist_track_can_be_deleted(self):
+        self._register("alice")
+        headers = self._auth_header("alice")
+
+        class FakeMinio:
+            def bucket_exists(self, *args, **kwargs):
+                return True
+
+            def put_object(self, **kwargs):
+                return None
+
+        with patch("app.services.post_service.get_minio_client", return_value=FakeMinio()):
+            create_resp = self.client.post(
+                "/api/posts",
+                data={
+                    "text": "",
+                    "media": (io.BytesIO(b"fake-audio-bytes"), "remove_me.mp3", "audio/mpeg"),
+                },
+                headers=headers,
+                content_type="multipart/form-data",
+            )
+        self.assertEqual(create_resp.status_code, 201)
+
+        posts_resp = self.client.get("/api/posts", headers=headers)
+        media_id = posts_resp.get_json()["posts"][0]["media"][0]["id"]
+
+        add_resp = self.client.post(
+            "/api/playlists/tracks",
+            headers=headers,
+            json={"media_id": media_id},
+        )
+        self.assertEqual(add_resp.status_code, 201)
+        track_id = add_resp.get_json()["track"]["id"]
+
+        delete_resp = self.client.delete(f"/api/playlists/tracks/{track_id}", headers=headers)
+        self.assertEqual(delete_resp.status_code, 200)
+        self.assertEqual(delete_resp.get_json()["message"], "Track removed from playlist")
+
+        list_resp = self.client.get("/api/playlists/tracks", headers=headers)
+        self.assertEqual(list_resp.status_code, 200)
+        self.assertEqual(list_resp.get_json()["total"], 0)
 
     def test_playlist_rejects_non_audio_media(self):
         self._register("alice")
@@ -1261,6 +1422,159 @@ class TestApiRoutes(unittest.TestCase):
         notification = payload["notifications"][0]
         self.assertEqual(notification["kind"], "comment_reply")
         self.assertEqual(notification["extra"]["comment_preview"], long_reply)
+
+    def test_activity_notification_like_milestone_emits_once_for_threshold(self):
+        self._register("alice")
+        self._register("bob")
+        self._register("charlie")
+
+        self.app.config["ACTIVITY_MILESTONE_ENABLED"] = True
+        self.app.config["ACTIVITY_MILESTONE_LIKE_PERCENT"] = 50
+        self.app.config["ACTIVITY_MILESTONE_MIN_LIKES"] = 2
+        self.app.config["ACTIVITY_MILESTONE_ACTIVE_USERS_CACHE_TTL_SECONDS"] = 0
+
+        alice_headers = self._auth_header("alice")
+        bob_headers = self._auth_header("bob")
+        charlie_headers = self._auth_header("charlie")
+
+        post_resp = self.client.post(
+            "/api/posts",
+            json={"text": "post for like milestone"},
+            headers=alice_headers,
+        )
+        post_id = post_resp.get_json()["post_id"]
+
+        first_like = self.client.post(
+            "/api/votes",
+            json={"target_type": "post", "target_id": post_id, "value": 1},
+            headers=bob_headers,
+        )
+        self.assertEqual(first_like.status_code, 200)
+
+        before_threshold = self.client.get(
+            "/api/activity-notifications?page=1&limit=20",
+            headers=alice_headers,
+        )
+        self.assertEqual(before_threshold.status_code, 200)
+        before_payload = before_threshold.get_json()
+        self.assertEqual(
+            sum(1 for item in before_payload["notifications"] if item["kind"] == "post_like_milestone"),
+            0,
+        )
+
+        second_like = self.client.post(
+            "/api/votes",
+            json={"target_type": "post", "target_id": post_id, "value": 1},
+            headers=charlie_headers,
+        )
+        self.assertEqual(second_like.status_code, 200)
+
+        after_threshold = self.client.get(
+            "/api/activity-notifications?page=1&limit=30",
+            headers=alice_headers,
+        )
+        self.assertEqual(after_threshold.status_code, 200)
+        after_payload = after_threshold.get_json()
+        milestone_notifications = [
+            item for item in after_payload["notifications"]
+            if item["kind"] == "post_like_milestone"
+        ]
+        self.assertEqual(len(milestone_notifications), 1)
+        milestone = milestone_notifications[0]
+        self.assertEqual(milestone["target_type"], "post")
+        self.assertEqual(milestone["target_id"], post_id)
+        self.assertEqual(milestone["extra"]["engagement_type"], "likes")
+        self.assertEqual(milestone["extra"]["milestone_count"], 2)
+        self.assertEqual(milestone["extra"]["engagement_count"], 2)
+
+        duplicate_like = self.client.post(
+            "/api/votes",
+            json={"target_type": "post", "target_id": post_id, "value": 1},
+            headers=charlie_headers,
+        )
+        self.assertEqual(duplicate_like.status_code, 200)
+
+        after_duplicate = self.client.get(
+            "/api/activity-notifications?page=1&limit=30",
+            headers=alice_headers,
+        )
+        self.assertEqual(after_duplicate.status_code, 200)
+        duplicate_payload = after_duplicate.get_json()
+        duplicate_milestones = [
+            item for item in duplicate_payload["notifications"]
+            if item["kind"] == "post_like_milestone"
+        ]
+        self.assertEqual(len(duplicate_milestones), 1)
+
+    def test_activity_notification_comment_milestone_uses_unique_commenters(self):
+        self._register("alice")
+        self._register("bob")
+        self._register("charlie")
+
+        self.app.config["ACTIVITY_MILESTONE_ENABLED"] = True
+        self.app.config["ACTIVITY_MILESTONE_COMMENT_PERCENT"] = 50
+        self.app.config["ACTIVITY_MILESTONE_MIN_COMMENTERS"] = 2
+        self.app.config["ACTIVITY_MILESTONE_ACTIVE_USERS_CACHE_TTL_SECONDS"] = 0
+
+        alice_headers = self._auth_header("alice")
+        bob_headers = self._auth_header("bob")
+        charlie_headers = self._auth_header("charlie")
+
+        post_resp = self.client.post(
+            "/api/posts",
+            json={"text": "post for comment milestone"},
+            headers=alice_headers,
+        )
+        post_id = post_resp.get_json()["post_id"]
+
+        first_comment = self.client.post(
+            f"/api/posts/{post_id}/comments",
+            json={"text": "first from bob"},
+            headers=bob_headers,
+        )
+        self.assertEqual(first_comment.status_code, 201)
+        second_comment_same_user = self.client.post(
+            f"/api/posts/{post_id}/comments",
+            json={"text": "second from bob"},
+            headers=bob_headers,
+        )
+        self.assertEqual(second_comment_same_user.status_code, 201)
+
+        before_second_user = self.client.get(
+            "/api/activity-notifications?page=1&limit=30",
+            headers=alice_headers,
+        )
+        self.assertEqual(before_second_user.status_code, 200)
+        before_payload = before_second_user.get_json()
+        self.assertEqual(
+            sum(1 for item in before_payload["notifications"] if item["kind"] == "post_comment_milestone"),
+            0,
+        )
+
+        comment_from_second_user = self.client.post(
+            f"/api/posts/{post_id}/comments",
+            json={"text": "from charlie"},
+            headers=charlie_headers,
+        )
+        self.assertEqual(comment_from_second_user.status_code, 201)
+
+        after_second_user = self.client.get(
+            "/api/activity-notifications?page=1&limit=40",
+            headers=alice_headers,
+        )
+        self.assertEqual(after_second_user.status_code, 200)
+        after_payload = after_second_user.get_json()
+        milestone_notifications = [
+            item for item in after_payload["notifications"]
+            if item["kind"] == "post_comment_milestone"
+        ]
+        self.assertEqual(len(milestone_notifications), 1)
+        milestone = milestone_notifications[0]
+        self.assertEqual(milestone["target_type"], "post")
+        self.assertEqual(milestone["target_id"], post_id)
+        self.assertEqual(milestone["extra"]["engagement_type"], "comments")
+        self.assertEqual(milestone["extra"]["milestone_count"], 2)
+        self.assertEqual(milestone["extra"]["engagement_count"], 2)
 
     def test_delete_own_post_removes_post_and_related_comments(self):
         self._register("alice")

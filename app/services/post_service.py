@@ -52,6 +52,7 @@ ALLOWED_AUDIO_MIME_TYPES = {
 
 MAX_MEDIA_FILES = 8
 MAX_VIDEO_DURATION_SECONDS = 30 * 60
+MUSIC_TITLE_FALLBACK = "Music track"
 
 
 class MediaStorageError(Exception):
@@ -153,8 +154,135 @@ def _serialize_author(author_id: int, user_by_id: dict, profile_by_user_id: dict
     }
 
 
-def _serialize_post(post, user_by_id: dict, profile_by_user_id: dict):
+def _build_playlist_adders_by_media(posts: list[Post]):
+    audio_media_ids = {
+        media.id
+        for post in posts
+        for media in post.media
+        if _is_audio_mimetype(media.mime_type)
+    }
+    if not audio_media_ids:
+        return {}
+
+    rows = (
+        db.session.query(
+            PlaylistTrack.media_id,
+            User.id,
+            User.username,
+            Profile.name,
+            Profile.image_object_name,
+            PlaylistTrack.created_at,
+            PlaylistTrack.id,
+        )
+        .join(User, User.id == PlaylistTrack.user_id)
+        .outerjoin(Profile, Profile.user_id == User.id)
+        .filter(
+            PlaylistTrack.media_id.in_(audio_media_ids),
+            User.is_suspended.is_(False),
+        )
+        .order_by(
+            PlaylistTrack.media_id.asc(),
+            PlaylistTrack.created_at.desc(),
+            PlaylistTrack.id.desc(),
+        )
+        .all()
+    )
+
+    adders_by_media_id: dict[int, list[dict]] = {}
+    for media_id, user_id, username, name, image_object_name, _, _ in rows:
+        profile_image_url = _build_media_url(image_object_name) if image_object_name else None
+        adders = adders_by_media_id.setdefault(media_id, [])
+        adders.append(
+            {
+                "id": user_id,
+                "username": username,
+                "name": (name or "").strip() or username,
+                "profile_image_url": profile_image_url,
+            }
+        )
+
+    return adders_by_media_id
+
+
+def _serialize_media_item(
+    media: Media,
+    playlist_adders_by_media_id: dict[int, list[dict]] | None = None,
+):
+    payload = {
+        "id": media.id,
+        "url": _build_media_url(media.object_name),
+        "mime_type": media.mime_type,
+        "display_name": media.display_name,
+        "title": media.title,
+        "artist": media.artist,
+    }
+    if playlist_adders_by_media_id is not None:
+        payload["playlist_adders"] = playlist_adders_by_media_id.get(media.id, [])
+    return payload
+
+
+def _serialize_post_preview(
+    post: Post,
+    user_by_id: dict,
+    profile_by_user_id: dict,
+):
+    return {
+        "id": post.id,
+        "text": post.text,
+        "author": _serialize_author(post.author_id, user_by_id, profile_by_user_id),
+        "created_at": post.created_at.isoformat(),
+        "media": [
+            _serialize_media_item(media)
+            for media in post.media
+        ],
+    }
+
+
+def _build_visible_quoted_posts(
+    posts: list[Post],
+    viewer_user_id: int | None,
+    hidden_user_ids: set[int] | None = None,
+):
+    quoted_post_ids = {
+        int(post.quoted_post_id)
+        for post in posts
+        if getattr(post, "quoted_post_id", None)
+    }
+    if not quoted_post_ids:
+        return {}
+
+    query = (
+        Post.query
+        .join(User, User.id == Post.author_id)
+        .filter(
+            Post.id.in_(quoted_post_ids),
+            Post.is_hidden.is_(False),
+            User.is_suspended.is_(False),
+            _post_visibility_filter(viewer_user_id),
+        )
+        .options(selectinload(Post.media))
+    )
+    if hidden_user_ids:
+        query = query.filter(~Post.author_id.in_(hidden_user_ids))
+
+    return {post.id: post for post in query.all()}
+
+
+def _serialize_post(
+    post,
+    user_by_id: dict,
+    profile_by_user_id: dict,
+    playlist_adders_by_media_id: dict[int, list[dict]] | None = None,
+    quoted_posts_by_id: dict[int, Post] | None = None,
+):
     author_payload = _serialize_author(post.author_id, user_by_id, profile_by_user_id)
+    adders_by_media_id = playlist_adders_by_media_id or {}
+    quoted_post_id = getattr(post, "quoted_post_id", None)
+    quoted_post = (
+        (quoted_posts_by_id or {}).get(quoted_post_id)
+        if quoted_post_id is not None
+        else None
+    )
 
     return {
         "id": post.id,
@@ -162,15 +290,21 @@ def _serialize_post(post, user_by_id: dict, profile_by_user_id: dict):
         "author": author_payload,
         "created_at": post.created_at.isoformat(),
         "viewer_vote": 0,
+        "quoted_post_id": quoted_post_id,
+        "quoted_post": (
+            _serialize_post_preview(
+                quoted_post,
+                user_by_id,
+                profile_by_user_id,
+            )
+            if quoted_post is not None
+            else None
+        ),
         "media": [
-            {
-                "id": media.id,
-                "url": _build_media_url(media.object_name),
-                "mime_type": media.mime_type,
-                "display_name": media.display_name,
-                "title": media.title,
-                "artist": media.artist,
-            }
+            _serialize_media_item(
+                media,
+                playlist_adders_by_media_id=adders_by_media_id,
+            )
             for media in post.media
         ]
     }
@@ -276,13 +410,49 @@ def _is_audio_mimetype(mimetype: str) -> bool:
     return normalized in ALLOWED_AUDIO_MIME_TYPES or normalized.startswith("audio/")
 
 
-def _build_audio_metadata(file_name: str | None):
-    display_name = (file_name or "").strip()
-    if not display_name:
-        return None, None, None
+def _normalize_music_text(value: str | None) -> str | None:
+    cleaned = (value or "").strip()
+    return cleaned or None
 
-    title = os.path.splitext(display_name)[0].strip() or display_name
-    return display_name, title, None
+
+def _split_track_metadata_from_display_name(display_name: str | None):
+    base_name = os.path.splitext((display_name or "").strip())[0].strip()
+    if not base_name:
+        return None, None
+
+    for separator in (" - ", " \u2013 ", " \u2014 "):
+        if separator not in base_name:
+            continue
+        left, right = base_name.split(separator, 1)
+        candidate_artist = left.strip() or None
+        candidate_title = right.strip() or None
+        if candidate_artist and candidate_title:
+            return candidate_artist, candidate_title
+
+    return None, base_name
+
+
+def _build_audio_metadata(
+    file_name: str | None,
+    track_title: str | None = None,
+    track_artist: str | None = None,
+):
+    display_name = (file_name or "").strip()
+
+    parsed_artist, parsed_title = _split_track_metadata_from_display_name(display_name)
+    normalized_title = _normalize_music_text(track_title) or parsed_title
+    normalized_artist = _normalize_music_text(track_artist) or parsed_artist
+
+    if normalized_title is None:
+        if display_name:
+            normalized_title = os.path.splitext(display_name)[0].strip() or display_name
+        else:
+            normalized_title = MUSIC_TITLE_FALLBACK
+
+    if normalized_artist and normalized_artist.lower() == normalized_title.lower():
+        normalized_artist = None
+
+    return (display_name or None), normalized_title, normalized_artist
 
 
 def _get_mp4_duration_seconds(file_storage):
@@ -413,7 +583,43 @@ def _store_media_locally(file_storage, post_id: int, extension: str) -> str:
     return "static/" + "/".join(relative_parts)
 
 
-def create_post_with_media(username, text, files, followers_only: bool = False):
+def _resolve_visible_quoted_post_for_author(
+    quoted_post_id: int | None,
+    author_username: str,
+):
+    if quoted_post_id is None:
+        return None
+
+    viewer_user_id = _viewer_user_id(author_username)
+    hidden_user_ids = block_service.hidden_user_ids_for_viewer(author_username)
+    query = (
+        Post.query
+        .join(User, User.id == Post.author_id)
+        .filter(
+            Post.id == quoted_post_id,
+            Post.is_hidden.is_(False),
+            User.is_suspended.is_(False),
+            _post_visibility_filter(viewer_user_id),
+        )
+    )
+    if hidden_user_ids:
+        query = query.filter(~Post.author_id.in_(hidden_user_ids))
+
+    quoted_post = query.first()
+    if not quoted_post:
+        raise ValueError("Quoted post not found")
+    return quoted_post
+
+
+def create_post_with_media(
+    username,
+    text,
+    files,
+    followers_only: bool = False,
+    track_title: str | None = None,
+    track_artist: str | None = None,
+    quoted_post_id: int | None = None,
+):
     files = files or []
     if len(files) > MAX_MEDIA_FILES:
         raise ValueError("Maximum 8 media files allowed")
@@ -438,11 +644,20 @@ def create_post_with_media(username, text, files, followers_only: bool = False):
     elif cleaned_text == "":
         raise ValueError("Text is required")
 
+    quoted_post = _resolve_visible_quoted_post_for_author(
+        quoted_post_id=quoted_post_id,
+        author_username=username,
+    )
+
     validated_files = []
     for file, file_name, mimetype in normalized_files:
         if has_audio_file:
             extension = _extension_for_mimetype(mimetype)
-            display_name, title, artist = _build_audio_metadata(file_name)
+            display_name, title, artist = _build_audio_metadata(
+                file_name=file_name,
+                track_title=track_title,
+                track_artist=track_artist,
+            )
             validated_files.append(
                 (
                     file,
@@ -471,6 +686,7 @@ def create_post_with_media(username, text, files, followers_only: bool = False):
         username,
         cleaned_text,
         followers_only=followers_only,
+        quoted_post_id=(quoted_post.id if quoted_post is not None else None),
     )
 
     media_post_process_items = []
@@ -623,9 +839,21 @@ def get_posts(
         if post_id in posts_by_id
     ]
 
-    author_ids = {post.author_id for post in posts}
+    quoted_posts_by_id = _build_visible_quoted_posts(
+        ordered_posts,
+        viewer_user_id=viewer_user_id,
+        hidden_user_ids=hidden_user_ids,
+    )
+    author_ids = {
+        post.author_id
+        for post in ordered_posts
+    } | {
+        quoted_post.author_id
+        for quoted_post in quoted_posts_by_id.values()
+    }
     post_ids = set(paged_post_ids)
     user_by_id, profile_by_user_id = _build_author_maps(author_ids)
+    playlist_adders_by_media_id = _build_playlist_adders_by_media(ordered_posts)
     vote_by_post_id = _build_vote_map(
         post_ids=post_ids,
         viewer_user_id=viewer_user_id,
@@ -633,7 +861,13 @@ def get_posts(
 
     result = []
     for post in ordered_posts:
-        payload = _serialize_post(post, user_by_id, profile_by_user_id)
+        payload = _serialize_post(
+            post,
+            user_by_id,
+            profile_by_user_id,
+            playlist_adders_by_media_id=playlist_adders_by_media_id,
+            quoted_posts_by_id=quoted_posts_by_id,
+        )
         payload["viewer_vote"] = int(vote_by_post_id.get(post.id, 0))
         result.append(payload)
 
@@ -676,13 +910,29 @@ def get_post(post_id: int, viewer_username: str | None = None):
     if not post:
         raise ValueError("Post not found")
 
-    user_by_id, profile_by_user_id = _build_author_maps({post.author_id})
+    quoted_posts_by_id = _build_visible_quoted_posts(
+        [post],
+        viewer_user_id=viewer_user_id,
+        hidden_user_ids=hidden_user_ids,
+    )
+    author_ids = {post.author_id} | {
+        quoted_post.author_id
+        for quoted_post in quoted_posts_by_id.values()
+    }
+    user_by_id, profile_by_user_id = _build_author_maps(author_ids)
+    playlist_adders_by_media_id = _build_playlist_adders_by_media([post])
     vote_by_post_id = _build_vote_map(
         post_ids={post.id},
         viewer_user_id=viewer_user_id,
     )
 
-    payload = _serialize_post(post, user_by_id, profile_by_user_id)
+    payload = _serialize_post(
+        post,
+        user_by_id,
+        profile_by_user_id,
+        playlist_adders_by_media_id=playlist_adders_by_media_id,
+        quoted_posts_by_id=quoted_posts_by_id,
+    )
     payload["viewer_vote"] = int(vote_by_post_id.get(post.id, 0))
     return payload
 
@@ -724,9 +974,19 @@ def get_posts_by_username(
         or 0
     )
     posts = query.offset((page - 1) * limit).limit(limit).all()
-    author_ids = {post.author_id for post in posts}
+    hidden_user_ids = block_service.hidden_user_ids_for_viewer(viewer_username)
+    quoted_posts_by_id = _build_visible_quoted_posts(
+        posts,
+        viewer_user_id=viewer_user_id,
+        hidden_user_ids=hidden_user_ids,
+    )
+    author_ids = {post.author_id for post in posts} | {
+        quoted_post.author_id
+        for quoted_post in quoted_posts_by_id.values()
+    }
     post_ids = {post.id for post in posts}
     user_by_id, profile_by_user_id = _build_author_maps(author_ids)
+    playlist_adders_by_media_id = _build_playlist_adders_by_media(posts)
     vote_by_post_id = _build_vote_map(
         post_ids=post_ids,
         viewer_user_id=viewer_user_id,
@@ -734,7 +994,13 @@ def get_posts_by_username(
 
     serialized_posts = []
     for post in posts:
-        payload = _serialize_post(post, user_by_id, profile_by_user_id)
+        payload = _serialize_post(
+            post,
+            user_by_id,
+            profile_by_user_id,
+            playlist_adders_by_media_id=playlist_adders_by_media_id,
+            quoted_posts_by_id=quoted_posts_by_id,
+        )
         payload["viewer_vote"] = int(vote_by_post_id.get(post.id, 0))
         serialized_posts.append(payload)
 
@@ -785,6 +1051,12 @@ def delete_post_by_username(post_id: int, username: str):
         PlaylistTrack.query.filter(
             PlaylistTrack.media_id.in_(media_ids)
         ).delete(synchronize_session=False)
+    Post.query.filter(
+        Post.quoted_post_id == post.id
+    ).update(
+        {Post.quoted_post_id: None},
+        synchronize_session=False,
+    )
     Media.query.filter_by(post_id=post.id).delete(synchronize_session=False)
     PostReport.query.filter_by(post_id=post.id).delete(synchronize_session=False)
     db.session.delete(post)

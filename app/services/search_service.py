@@ -7,6 +7,8 @@ from app.models.vote_model import Vote
 from app.services import block_service
 from app.services.post_service import (
     _build_author_maps,
+    _build_playlist_adders_by_media,
+    _build_visible_quoted_posts,
     _post_visibility_filter,
     _serialize_post,
     _viewer_user_id,
@@ -115,13 +117,28 @@ def search_posts(
     total = base_query.count()
     posts = base_query.offset((page - 1) * limit).limit(limit).all()
 
-    author_ids = {p.author_id for p in posts}
+    quoted_posts_by_id = _build_visible_quoted_posts(
+        posts,
+        viewer_user_id=viewer_user_id,
+        hidden_user_ids=hidden_user_ids,
+    )
+    author_ids = {p.author_id for p in posts} | {
+        quoted_post.author_id
+        for quoted_post in quoted_posts_by_id.values()
+    }
     user_by_id, profile_by_user_id = _build_author_maps(author_ids)
+    playlist_adders_by_media_id = _build_playlist_adders_by_media(posts)
     vote_by_post_id = _build_vote_map(posts=posts, viewer_user_id=viewer_user_id)
 
     serialized_posts = []
     for post in posts:
-        payload = _serialize_post(post, user_by_id, profile_by_user_id)
+        payload = _serialize_post(
+            post,
+            user_by_id,
+            profile_by_user_id,
+            playlist_adders_by_media_id=playlist_adders_by_media_id,
+            quoted_posts_by_id=quoted_posts_by_id,
+        )
         payload["viewer_vote"] = int(vote_by_post_id.get(post.id, 0))
         serialized_posts.append(payload)
 

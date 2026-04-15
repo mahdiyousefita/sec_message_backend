@@ -16,6 +16,22 @@ def create_notification(recipient_id, actor_id, kind, target_type=None, target_i
     return notif
 
 
+def get_latest_notification_for_target(recipient_id, kind, target_type, target_id):
+    if target_id is None:
+        return None
+    return (
+        ActivityNotification.query
+        .filter_by(
+            recipient_id=recipient_id,
+            kind=kind,
+            target_type=target_type,
+            target_id=target_id,
+        )
+        .order_by(ActivityNotification.created_at.desc(), ActivityNotification.id.desc())
+        .first()
+    )
+
+
 def get_notifications_page(recipient_id, page, limit, unread_only=False):
     query = (
         ActivityNotification.query

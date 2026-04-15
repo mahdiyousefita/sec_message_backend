@@ -72,6 +72,33 @@ def _ensure_post_visibility_schema():
     db.session.commit()
 
 
+def _ensure_post_quote_schema():
+    inspector = inspect(db.engine)
+    if not inspector.has_table("posts"):
+        return
+
+    column_names = {
+        column["name"]
+        for column in inspector.get_columns("posts")
+    }
+    if "quoted_post_id" not in column_names:
+        db.session.execute(
+            text(
+                "ALTER TABLE posts "
+                "ADD COLUMN quoted_post_id INTEGER"
+            )
+        )
+
+    db.session.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_posts_quoted_post_id "
+            "ON posts (quoted_post_id)"
+        )
+    )
+
+    db.session.commit()
+
+
 def _ensure_media_schema():
     inspector = inspect(db.engine)
     if not inspector.has_table("media"):
@@ -293,6 +320,7 @@ def create_app():
     with app.app_context():
         db.create_all()
         _ensure_post_visibility_schema()
+        _ensure_post_quote_schema()
         _ensure_media_schema()
         _ensure_performance_indexes()
         _ensure_app_update_schema()

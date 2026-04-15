@@ -42,6 +42,12 @@ MANAGED_INDEX_SPECS: tuple[IndexSpec, ...] = (
         rollback_safe=True,
     ),
     IndexSpec(
+        table_name="posts",
+        index_name="ix_posts_quoted_post_id",
+        ddl_target="posts (quoted_post_id)",
+        rollback_safe=True,
+    ),
+    IndexSpec(
         table_name="comments",
         index_name="ix_comments_post_parent_score_created",
         ddl_target="comments (post_id, parent_id, score DESC, created_at DESC)",
@@ -93,6 +99,14 @@ MANAGED_INDEX_SPECS: tuple[IndexSpec, ...] = (
         table_name="activity_notifications",
         index_name="ix_activity_notifications_recipient_unread_created",
         ddl_target="activity_notifications (recipient_id, is_read, created_at DESC)",
+    ),
+    IndexSpec(
+        table_name="activity_notifications",
+        index_name="ix_activity_notifications_recipient_kind_target_created",
+        ddl_target=(
+            "activity_notifications "
+            "(recipient_id, kind, target_type, target_id, created_at DESC)"
+        ),
     ),
     IndexSpec(
         table_name="post_reports",

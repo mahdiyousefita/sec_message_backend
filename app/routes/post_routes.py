@@ -51,6 +51,32 @@ def _parse_include_total(value):
     raise ValueError("include_total must be a boolean")
 
 
+def _parse_optional_post_id(value):
+    if value is None:
+        return None
+
+    if isinstance(value, bool):
+        raise ValueError("quoted_post_id must be a positive integer")
+
+    if isinstance(value, int):
+        if value <= 0:
+            raise ValueError("quoted_post_id must be a positive integer")
+        return value
+
+    if isinstance(value, str):
+        normalized = value.strip()
+        if not normalized:
+            return None
+        if not normalized.isdigit():
+            raise ValueError("quoted_post_id must be a positive integer")
+        parsed_value = int(normalized)
+        if parsed_value <= 0:
+            raise ValueError("quoted_post_id must be a positive integer")
+        return parsed_value
+
+    raise ValueError("quoted_post_id must be a positive integer")
+
+
 @post_bp.route("/posts", methods=["POST"])
 @jwt_required()
 def create_post():
@@ -60,9 +86,18 @@ def create_post():
     text = None
     files = []
     followers_only = False
+    track_title = None
+    track_artist = None
+    quoted_post_id = None
 
     if "multipart/form-data" in content_type:
         text = request.form.get("text")
+        track_title = request.form.get("track_title")
+        track_artist = request.form.get("track_artist")
+        try:
+            quoted_post_id = _parse_optional_post_id(request.form.get("quoted_post_id"))
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
         try:
             followers_only = _parse_followers_only(request.form.get("followers_only"))
         except ValueError as e:
@@ -81,12 +116,24 @@ def create_post():
             return jsonify({"error": "Invalid JSON body"}), 400
         text = data.get("text")
         try:
+            quoted_post_id = _parse_optional_post_id(data.get("quoted_post_id"))
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        try:
             followers_only = _parse_followers_only(data.get("followers_only"))
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
 
     try:
-        result = create_post_with_media(username, text, files, followers_only=followers_only)
+        result = create_post_with_media(
+            username,
+            text,
+            files,
+            followers_only=followers_only,
+            track_title=track_title,
+            track_artist=track_artist,
+            quoted_post_id=quoted_post_id,
+        )
         return jsonify({
             "message": "Post created successfully",
             "post_id": result["post_id"]
