@@ -1,5 +1,6 @@
 import json
 import uuid
+from fnmatch import fnmatch
 from datetime import datetime, timezone
 from app.extensions.redis_client import redis_client
 
@@ -978,3 +979,216 @@ def record_group_conversation_timestamp(group_id, iso_timestamp=None):
 
     key_prefix = "group_ts"
     redis_client.zadd(f"{key_prefix}:global", {str(group_id): ts})
+
+
+def _decode_redis_key(value):
+    if isinstance(value, bytes):
+        return value.decode("utf-8")
+    return str(value)
+
+
+def _scan_keys(pattern):
+    scan_iter = getattr(redis_client, "scan_iter", None)
+    if callable(scan_iter):
+        try:
+            return [
+                _decode_redis_key(key)
+                for key in scan_iter(match=pattern, count=200)
+            ]
+        except TypeError:
+            return [
+                _decode_redis_key(key)
+                for key in scan_iter(pattern)
+            ]
+
+    keys_fn = getattr(redis_client, "keys", None)
+    if callable(keys_fn):
+        try:
+            return [_decode_redis_key(key) for key in keys_fn(pattern)]
+        except TypeError:
+            return [_decode_redis_key(key) for key in keys_fn()]
+
+    all_keys = set()
+    all_keys_fn = getattr(redis_client, "_all_keys", None)
+    if callable(all_keys_fn):
+        all_keys.update(_decode_redis_key(key) for key in all_keys_fn())
+    else:
+        for attr in ("_sets", "_lists", "_hashes", "_sorted_sets", "_strings"):
+            bucket = getattr(redis_client, attr, None)
+            if isinstance(bucket, dict):
+                all_keys.update(_decode_redis_key(key) for key in bucket.keys())
+
+    return [key for key in all_keys if fnmatch(key, pattern)]
+
+
+def _safe_load_json(raw_value):
+    if raw_value is None:
+        return None
+    if isinstance(raw_value, bytes):
+        raw_value = raw_value.decode("utf-8")
+    try:
+        parsed = json.loads(raw_value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def purge_user_data(username, candidate_usernames=None):
+    if not username:
+        return
+
+    normalized_users = {username}
+    if candidate_usernames:
+        for candidate in candidate_usernames:
+            if isinstance(candidate, bytes):
+                candidate = candidate.decode("utf-8")
+            if isinstance(candidate, str) and candidate:
+                normalized_users.add(candidate)
+
+    contacts = get_contacts(username)
+    for contact in contacts:
+        contact_text = _decode_redis_text(contact)
+        if isinstance(contact_text, str) and contact_text:
+            normalized_users.add(contact_text)
+
+    removed_message_ids = set()
+
+    # Remove private pending messages sent by this user from every known inbox.
+    for owner in sorted(normalized_users):
+        messages = peek_messages(owner)
+        removable_ids = [
+            message_id
+            for message_id in (
+                (message or {}).get("message_id")
+                for message in messages
+                if (message or {}).get("from") == username
+            )
+            if isinstance(message_id, str) and message_id
+        ]
+        if removable_ids:
+            _removed_count, removed_payloads = ack_messages_with_payloads(owner, removable_ids)
+            for payload in removed_payloads:
+                message_id = (payload or {}).get("message_id")
+                if isinstance(message_id, str) and message_id:
+                    removed_message_ids.add(message_id)
+
+        redis_client.hdel(_chat_unread_count_key(owner), username)
+        redis_client.delete(_chat_last_key(owner, username))
+        redis_client.srem(f"contacts:{owner}", username)
+        redis_client.zrem(f"contact_ts:{owner}", username)
+        redis_client.delete(f"private_seen:{owner}:{username}")
+        redis_client.delete(f"private_seen:{username}:{owner}")
+        redis_client.delete(f"private_deleted:{owner}:{username}")
+        redis_client.delete(f"private_deleted:{username}:{owner}")
+
+    redis_client.delete(_inbox_key(username))
+    redis_client.delete(_inbox_index_order_key(username))
+    redis_client.delete(_inbox_index_payload_key(username))
+    redis_client.delete(_inbox_index_ids_key(username))
+    redis_client.delete(_chat_unread_count_key(username))
+    redis_client.delete(f"contacts:{username}")
+    redis_client.delete(f"contact_ts:{username}")
+    redis_client.delete(f"message_delete_events:{username}")
+
+    # Remove group pending messages sent by this user from all group inboxes.
+    for inbox_key in _scan_keys("group_user_inbox:*:*"):
+        parts = inbox_key.split(":")
+        if len(parts) != 4:
+            continue
+        owner = parts[2]
+        try:
+            group_id = int(parts[3])
+        except (TypeError, ValueError):
+            continue
+
+        if owner == username:
+            redis_client.delete(_group_inbox_key(owner, group_id))
+            redis_client.delete(_group_inbox_index_order_key(owner, group_id))
+            redis_client.delete(_group_inbox_index_payload_key(owner, group_id))
+            redis_client.delete(_group_inbox_index_ids_key(owner, group_id))
+            continue
+
+        messages = peek_group_messages_for_user(owner, group_id)
+        removable_ids = [
+            message_id
+            for message_id in (
+                (message or {}).get("message_id")
+                for message in messages
+                if (message or {}).get("from") == username
+            )
+            if isinstance(message_id, str) and message_id
+        ]
+        if removable_ids:
+            _removed_count, removed_payloads = ack_group_messages_with_payloads(
+                owner,
+                group_id,
+                removable_ids,
+            )
+            for payload in removed_payloads:
+                message_id = (payload or {}).get("message_id")
+                if isinstance(message_id, str) and message_id:
+                    removed_message_ids.add(message_id)
+
+    for key in _scan_keys("chat:last:*"):
+        parts = key.split(":")
+        if len(parts) != 4:
+            continue
+        if parts[2] == username or parts[3] == username:
+            redis_client.delete(key)
+
+    for key in _scan_keys("chat:unread_count:*"):
+        redis_client.hdel(key, username)
+
+    for key in _scan_keys("contacts:*"):
+        redis_client.srem(key, username)
+
+    for key in _scan_keys("contact_ts:*"):
+        redis_client.zrem(key, username)
+
+    for key in _scan_keys("private_seen:*"):
+        parts = key.split(":")
+        if len(parts) != 3:
+            continue
+        if parts[1] == username or parts[2] == username:
+            redis_client.delete(key)
+
+    for key in _scan_keys("private_deleted:*"):
+        parts = key.split(":")
+        if len(parts) != 3:
+            continue
+        if parts[1] == username or username in parts[2]:
+            redis_client.delete(key)
+
+    for key in _scan_keys("group_deleted:*"):
+        parts = key.split(":")
+        if len(parts) != 3:
+            continue
+        if parts[1] == username:
+            redis_client.delete(key)
+
+    for key in _scan_keys("message_delete_events:*"):
+        parts = key.split(":")
+        if len(parts) != 2:
+            continue
+        if parts[1] == username:
+            redis_client.delete(key)
+
+    for key in _scan_keys("message_meta:*"):
+        metadata = _safe_load_json(redis_client.get(key))
+        if not metadata:
+            continue
+        if metadata.get("sender") == username or metadata.get("recipient") == username:
+            message_id = metadata.get("message_id")
+            if isinstance(message_id, str) and message_id:
+                removed_message_ids.add(message_id)
+            redis_client.delete(key)
+
+    if removed_message_ids:
+        for key in _scan_keys("private_seen:*"):
+            redis_client.srem(key, *removed_message_ids)
+        for key in _scan_keys("private_deleted:*"):
+            redis_client.srem(key, *removed_message_ids)
+        for key in _scan_keys("group_seen:*"):
+            redis_client.srem(key, *removed_message_ids)
+        for key in _scan_keys("group_deleted:*"):
+            redis_client.srem(key, *removed_message_ids)

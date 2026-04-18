@@ -72,6 +72,15 @@ python migrate_add_performance_indexes.py --rollback
   - `ix_blocks_blocked_blocker`
   - `ix_group_members_user_group`
 
+## Android release checklist (APK + mapping)
+
+- When publishing a new Android APK on the website, upload the matching R8/ProGuard `mapping.txt` in the admin panel:
+  - `Admin Panel -> App Updates -> Release Mapping Upload (R8)`
+- Android mapping file path after release build:
+  - `android/sec_message/app/build/outputs/mapping/release/mapping.txt`
+- Use the same app version (and version code if available) as the released APK.
+- Crash logs in `Admin Panel -> Crash Logs` are deobfuscated only when the matching mapping file is uploaded.
+
 ## Background moderation cleanup
 
 - Moderation retention cleanup now runs in a background worker.

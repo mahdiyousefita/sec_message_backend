@@ -31,11 +31,13 @@ from app.routes.group_routes import group_bp
 from app.routes.report_routes import report_bp
 from app.routes.block_routes import block_bp
 from app.routes.playlist_routes import playlist_bp
+from app.routes.crash_routes import crash_bp
 from app.services import async_task_service, report_service
 
 import app.models.activity_notification_model  # noqa: F401 – register model with SQLAlchemy
 import app.models.app_update_model  # noqa: F401 – register model with SQLAlchemy
 import app.models.block_model  # noqa: F401 – register model with SQLAlchemy
+import app.models.crash_log_model  # noqa: F401 – register model with SQLAlchemy
 import app.models.group_model  # noqa: F401 – register model with SQLAlchemy
 import app.models.pending_registration_model  # noqa: F401 – register model with SQLAlchemy
 import app.models.playlist_track_model  # noqa: F401 – register model with SQLAlchemy
@@ -280,7 +282,7 @@ def create_app():
 
     app.config.from_object(Config)
 
-    app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50 MB hard cap
+    app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024  # 100 MB hard cap
     _warn_on_database_fallback(app)
     _log_async_task_mode(app)
 
@@ -312,6 +314,7 @@ def create_app():
     app.register_blueprint(follow_bp, url_prefix="/api")
     app.register_blueprint(search_bp, url_prefix="/api")
     app.register_blueprint(report_bp, url_prefix="/api")
+    app.register_blueprint(crash_bp, url_prefix="/api")
     app.register_blueprint(block_bp, url_prefix="/api")
     app.register_blueprint(playlist_bp, url_prefix="/api")
     app.register_blueprint(admin_bp, url_prefix="/admin")

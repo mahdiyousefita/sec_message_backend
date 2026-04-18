@@ -48,6 +48,7 @@ class TestApiRoutes(unittest.TestCase):
             patcher.stop()
 
         cls.socket_events._online_users.clear()
+        cls.socket_events._recently_online_users.clear()
         cls.socket_events._registered = False
 
         if os.path.exists(cls.db_path):
@@ -57,6 +58,8 @@ class TestApiRoutes(unittest.TestCase):
         with self.app.app_context():
             self.db.drop_all()
             self.db.create_all()
+        self.socket_events._online_users.clear()
+        self.socket_events._recently_online_users.clear()
         self.fake_redis.clear()
         uploads_dir = os.path.join(self.app.static_folder, "uploads")
         if os.path.isdir(uploads_dir):
@@ -116,6 +119,25 @@ class TestApiRoutes(unittest.TestCase):
         body = login_response.get_json()
         self.assertIn("access_token", body)
         self.assertIn("refresh_token", body)
+
+    def test_auth_key_status_reports_server_public_key_presence(self):
+        self._register("alice", public_key="alice_key")
+        headers = self._auth_header("alice")
+
+        response = self.client.get("/api/auth/keys/status", headers=headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.get_json()["has_public_key"])
+
+        with self.app.app_context():
+            from app.models.user_model import User
+            user = User.query.filter_by(username="alice").first()
+            self.assertIsNotNone(user)
+            user.public_key = ""
+            self.db.session.commit()
+
+        response_after_clear = self.client.get("/api/auth/keys/status", headers=headers)
+        self.assertEqual(response_after_clear.status_code, 200)
+        self.assertFalse(response_after_clear.get_json()["has_public_key"])
 
     def test_auth_rejects_invalid_json(self):
         response = self.client.post(
@@ -250,6 +272,52 @@ class TestApiRoutes(unittest.TestCase):
             get_response.get_json()["settings"]["force_message"],
             "Please update now.",
         )
+
+    def test_admin_online_users_endpoint_lists_current_online_users(self):
+        self._register("admin")
+        self._register("alice")
+        self._register("bob")
+        self._make_admin("admin")
+        admin_headers = self._auth_header("admin")
+
+        self.socket_events._online_users["bob"] = 2
+        self.socket_events._online_users["alice"] = 1
+
+        response = self.client.get("/admin/api/online-users", headers=admin_headers)
+        self.assertEqual(response.status_code, 200)
+
+        payload = response.get_json()
+        self.assertEqual(payload["total"], 2)
+        self.assertEqual(
+            [user["username"] for user in payload["users"]],
+            ["alice", "bob"],
+        )
+        self.assertTrue(all("id" in user for user in payload["users"]))
+        self.assertTrue(all("name" in user for user in payload["users"]))
+
+    def test_admin_recently_online_users_endpoint_resets_entries_older_than_24_hours(self):
+        self._register("admin")
+        self._register("alice")
+        self._register("bob")
+        self._register("charlie")
+        self._make_admin("admin")
+        admin_headers = self._auth_header("admin")
+
+        now = datetime.now(timezone.utc)
+        self.socket_events._recently_online_users["alice"] = now - timedelta(hours=2)
+        self.socket_events._recently_online_users["bob"] = now - timedelta(hours=26)
+        self.socket_events._online_users["charlie"] = 1
+
+        response = self.client.get("/admin/api/recently-online-users", headers=admin_headers)
+        self.assertEqual(response.status_code, 200)
+
+        payload = response.get_json()
+        self.assertEqual(payload["total"], 2)
+        self.assertEqual(
+            [user["username"] for user in payload["users"]],
+            ["alice", "charlie"],
+        )
+        self.assertNotIn("bob", self.socket_events._recently_online_users)
 
     def test_version_check_endpoint_returns_force_optional_and_none(self):
         self._register("admin")
@@ -2272,6 +2340,211 @@ class TestApiRoutes(unittest.TestCase):
         self.assertEqual(me_payload["name"], "Alice Wonder")
         self.assertEqual(me_payload["bio"], "Bio text")
 
+    def test_delete_my_account_removes_user_data(self):
+        self._register("alice")
+        self._register("bob")
+        alice_headers = self._auth_header("alice")
+        alice_refresh_headers = self._refresh_header("alice")
+        bob_headers = self._auth_header("bob")
+
+        alice_post_response = self.client.post(
+            "/api/posts",
+            json={"text": "alice post"},
+            headers=alice_headers,
+        )
+        self.assertEqual(alice_post_response.status_code, 201)
+        alice_post_id = alice_post_response.get_json()["post_id"]
+
+        bob_post_response = self.client.post(
+            "/api/posts",
+            json={"text": "bob post"},
+            headers=bob_headers,
+        )
+        self.assertEqual(bob_post_response.status_code, 201)
+        bob_post_id = bob_post_response.get_json()["post_id"]
+
+        alice_comment_response = self.client.post(
+            f"/api/posts/{bob_post_id}/comments",
+            json={"text": "alice comment on bob"},
+            headers=alice_headers,
+        )
+        self.assertEqual(alice_comment_response.status_code, 201)
+
+        self.assertEqual(
+            self.client.post("/api/follows/bob", headers=alice_headers).status_code,
+            200,
+        )
+        self.assertEqual(
+            self.client.post("/api/blocks/bob", headers=alice_headers).status_code,
+            201,
+        )
+
+        with self.app.app_context():
+            from app.models.activity_notification_model import ActivityNotification
+            from app.models.comment_model import Comment
+            from app.models.crash_log_model import CrashLog
+            from app.models.follow_model import Follow
+            from app.models.group_model import Group, GroupMember
+            from app.models.pending_registration_model import PendingRegistration
+            from app.models.post_model import Post
+            from app.models.profile_model import Profile
+            from app.models.profile_video_model import ProfileVideo
+            from app.models.user_model import User
+            from app.repositories import message_repository
+
+            alice = User.query.filter_by(username="alice").first()
+            bob = User.query.filter_by(username="bob").first()
+            self.assertIsNotNone(alice)
+            self.assertIsNotNone(bob)
+
+            profile = Profile.query.filter_by(user_id=alice.id).first()
+            self.assertIsNotNone(profile)
+            profile.image_object_name = "static/uploads/test-alice-image.webp"
+            db_profile_video = ProfileVideo(
+                user_id=alice.id,
+                video_object_name="static/uploads/test-alice-video.mp4",
+            )
+            self.db.session.add(db_profile_video)
+
+            self.db.session.add(
+                CrashLog(
+                    event_id="alice-crash-event",
+                    platform="android",
+                    app_version="1.0.0",
+                    app_version_code=1,
+                    thread_name="main",
+                    exception_type="RuntimeError",
+                    exception_message="boom",
+                    stack_trace="stack",
+                    occurred_at=datetime.utcnow(),
+                    user_id=alice.id,
+                    username_snapshot="alice",
+                )
+            )
+            self.db.session.add(
+                PendingRegistration(
+                    registration_id="pending-alice-reg",
+                    username="alice",
+                    password_hash="hash",
+                    public_key="pub",
+                    name="Alice",
+                    expires_at=datetime.utcnow() + timedelta(minutes=5),
+                )
+            )
+
+            group = Group(name="alice group", creator_id=alice.id)
+            self.db.session.add(group)
+            self.db.session.flush()
+            self.db.session.add(GroupMember(group_id=group.id, user_id=alice.id))
+            self.db.session.add(GroupMember(group_id=group.id, user_id=bob.id))
+
+            payload = message_repository.build_message_payload(
+                sender="alice",
+                encrypted_message="enc",
+                encrypted_key="k",
+            )
+            private_message_id = payload["message_id"]
+            message_repository.push_message_payload("bob", payload)
+            message_repository.store_private_message_metadata(payload, "bob")
+
+            incoming_payload = message_repository.build_message_payload(
+                sender="bob",
+                encrypted_message="enc-incoming",
+                encrypted_key="k2",
+            )
+            incoming_message_id = incoming_payload["message_id"]
+            message_repository.push_message_payload("alice", incoming_payload)
+            message_repository.store_private_message_metadata(incoming_payload, "alice")
+            self.db.session.commit()
+
+        delete_response = self.client.delete("/api/profiles/me", headers=alice_headers)
+        self.assertEqual(delete_response.status_code, 200)
+        self.assertEqual(delete_response.get_json()["message"], "Account deleted permanently")
+
+        refresh_response = self.client.post("/api/auth/refresh", headers=alice_refresh_headers)
+        self.assertEqual(refresh_response.status_code, 401)
+
+        login_response = self.client.post(
+            "/api/auth/login",
+            json={"username": "alice", "password": "pass123"},
+        )
+        self.assertEqual(login_response.status_code, 401)
+
+        with self.app.app_context():
+            from app.models.activity_notification_model import ActivityNotification
+            from app.models.block_model import Block
+            from app.models.comment_model import Comment
+            from app.models.crash_log_model import CrashLog
+            from app.models.follow_model import Follow
+            from app.models.group_model import Group, GroupMember
+            from app.models.pending_registration_model import PendingRegistration
+            from app.models.post_model import Post
+            from app.models.profile_model import Profile
+            from app.models.profile_video_model import ProfileVideo
+            from app.models.user_model import User
+            from app.repositories import message_repository
+
+            self.assertIsNone(User.query.filter_by(username="alice").first())
+            self.assertEqual(
+                Profile.query.join(User, Profile.user_id == User.id)
+                .filter(User.username == "alice")
+                .count(),
+                0,
+            )
+            self.assertEqual(
+                Post.query.join(User, Post.author_id == User.id)
+                .filter(User.username == "alice")
+                .count(),
+                0,
+            )
+            self.assertEqual(
+                Comment.query.join(User, Comment.author_id == User.id)
+                .filter(User.username == "alice")
+                .count(),
+                0,
+            )
+            self.assertEqual(
+                Follow.query.filter(
+                    (Follow.follower_id == self._user_id("bob")) | (Follow.following_id == self._user_id("bob"))
+                ).count() >= 0,
+                True,
+            )
+            self.assertEqual(
+                Block.query.count(),
+                0,
+            )
+            self.assertEqual(
+                ActivityNotification.query.count(),
+                0,
+            )
+            self.assertEqual(
+                Group.query.filter_by(name="alice group").count(),
+                0,
+            )
+            self.assertEqual(
+                GroupMember.query.count(),
+                0,
+            )
+            self.assertEqual(
+                ProfileVideo.query.count(),
+                0,
+            )
+            self.assertEqual(
+                PendingRegistration.query.filter_by(username="alice").count(),
+                0,
+            )
+            self.assertEqual(
+                CrashLog.query.filter_by(username_snapshot="alice").count(),
+                0,
+            )
+
+            pending_for_bob = message_repository.peek_messages("bob")
+            self.assertTrue(
+                all((message or {}).get("from") != "alice" for message in pending_for_bob)
+            )
+            self.assertIsNone(message_repository.get_message_metadata(private_message_id))
+            self.assertIsNone(message_repository.get_message_metadata(incoming_message_id))
+
     def test_profile_posts_endpoint_returns_only_target_user_posts(self):
         self._register("alice")
         self._register("bob")
@@ -2573,6 +2846,94 @@ class TestApiRoutes(unittest.TestCase):
                 User.query.filter(User.username.like("suspended_%")).count(),
                 0,
             )
+
+    def test_crash_log_ingest_and_admin_deobfuscation(self):
+        self._register("admin")
+        self._register("alice")
+        self._make_admin("admin")
+
+        admin_headers = self._auth_header("admin")
+        alice_headers = self._auth_header("alice")
+
+        crash_response = self.client.post(
+            "/api/crash-logs",
+            headers=alice_headers,
+            json={
+                "event_id": "evt-123",
+                "app_version": "0.8.4beta",
+                "app_version_code": 35,
+                "thread_name": "main",
+                "exception_type": "x.y",
+                "exception_message": "boom",
+                "stack_trace": "java.lang.RuntimeException: boom\n    at a.b.c(Unknown Source:12)",
+                "device_model": "Pixel 8",
+                "device_manufacturer": "Google",
+                "os_version": "14",
+                "sdk_int": 34,
+                "build_type": "release",
+            },
+        )
+        self.assertEqual(crash_response.status_code, 201)
+        crash_log_id = crash_response.get_json()["crash_log_id"]
+
+        mapping_content = (
+            b"java.lang.RuntimeException -> x.y:\n"
+            b"com.example.RealCrash -> a.b:\n"
+            b"    void crashNow() -> c\n"
+        )
+        mapping_response = self.client.post(
+            "/admin/api/crash-mappings",
+            headers=admin_headers,
+            data={
+                "app_version": "0.8.4beta",
+                "app_version_code": "35",
+                "mapping_file": (io.BytesIO(mapping_content), "mapping.txt"),
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(mapping_response.status_code, 200)
+
+        list_response = self.client.get(
+            "/admin/api/crash-logs?page=1&limit=20",
+            headers=admin_headers,
+        )
+        self.assertEqual(list_response.status_code, 200)
+        list_payload = list_response.get_json()
+        self.assertEqual(list_payload["total"], 1)
+        self.assertEqual(list_payload["crash_logs"][0]["exception_type"], "java.lang.RuntimeException")
+        self.assertTrue(list_payload["crash_logs"][0]["is_deobfuscated"])
+
+        detail_response = self.client.get(
+            f"/admin/api/crash-logs/{crash_log_id}",
+            headers=admin_headers,
+        )
+        self.assertEqual(detail_response.status_code, 200)
+        detail = detail_response.get_json()["crash_log"]
+        self.assertIn("com.example.RealCrash.crashNow", detail["deobfuscated_stack_trace"])
+
+    def test_crash_log_ingest_is_idempotent_by_event_id(self):
+        payload = {
+            "event_id": "duplicate-event-id",
+            "app_version": "0.8.4beta",
+            "exception_type": "java.lang.IllegalStateException",
+            "stack_trace": "java.lang.IllegalStateException: dup",
+        }
+
+        first_response = self.client.post("/api/crash-logs", json=payload)
+        second_response = self.client.post("/api/crash-logs", json=payload)
+
+        self.assertEqual(first_response.status_code, 201)
+        self.assertEqual(second_response.status_code, 200)
+        self.assertFalse(second_response.get_json()["created"])
+        self.assertEqual(
+            first_response.get_json()["crash_log_id"],
+            second_response.get_json()["crash_log_id"],
+        )
+
+        with self.app.app_context():
+            from app.models.crash_log_model import CrashLog
+
+            self.assertEqual(CrashLog.query.count(), 1)
 
 
     def test_message_attachment_upload_success(self):

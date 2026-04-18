@@ -194,6 +194,12 @@ def login(username, password):
 
 
 def refresh_access_token(username):
+    user = user_repository.get_by_username(username)
+    if not user:
+        raise AuthError("Unauthorized", status_code=401)
+    if getattr(user, "is_suspended", False):
+        raise AuthError("Account suspended", status_code=403)
+
     return {
         "access_token": create_access_token(identity=username)
     }
@@ -236,3 +242,18 @@ def rotate_public_key(username, public_key):
         "notify_usernames": sorted(recipients),
     }
 
+
+def get_key_status(username):
+    if not _require_non_empty_string(username):
+        raise AuthError("Unauthorized", status_code=401)
+
+    normalized_username = username.strip()
+    user = user_repository.get_by_username(normalized_username)
+    if not user:
+        raise AuthError("User not found", status_code=404)
+    if getattr(user, "is_suspended", False):
+        raise AuthError("Account suspended", status_code=403)
+
+    return {
+        "has_public_key": bool(getattr(user, "public_key", None)),
+    }

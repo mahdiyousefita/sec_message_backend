@@ -96,7 +96,10 @@ def logout():
 @jwt_required(refresh=True)
 def refresh_token():
     username = get_jwt_identity()
-    return jsonify(auth_service.refresh_access_token(username)), 200
+    try:
+        return jsonify(auth_service.refresh_access_token(username)), 200
+    except ValueError as e:
+        return _auth_error_response(e, fallback_status_code=401)
 
 
 @auth_bp.route("/keys/rotate", methods=["POST"])
@@ -135,3 +138,14 @@ def rotate_public_key():
         )
 
     return jsonify({"message": "Public key updated"}), 200
+
+
+@auth_bp.route("/keys/status", methods=["GET"])
+@jwt_required()
+def get_key_status():
+    username = get_jwt_identity()
+    try:
+        status = auth_service.get_key_status(username=username)
+    except ValueError as e:
+        return _auth_error_response(e, fallback_status_code=401)
+    return jsonify(status), 200

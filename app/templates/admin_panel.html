@@ -52,6 +52,7 @@ tr:hover{background:#1e293b}
 .btn-secondary:hover{background:#334155}
 .btn-info{background:#0ea5e9;color:#fff}
 .btn-info:hover{background:#0284c7}
+.btn:disabled{opacity:.6;cursor:not-allowed}
 
 /* Pagination */
 .pagination{display:flex;justify-content:center;gap:.5rem;margin-top:1rem}
@@ -73,10 +74,21 @@ tr:hover{background:#1e293b}
 .form-group input:focus,.form-group textarea:focus,.form-group select:focus{border-color:#38bdf8}
 .form-group textarea{resize:vertical;min-height:70px}
 .form-note{font-size:.78rem;color:#64748b;margin-top:-.25rem;margin-bottom:.7rem}
+.upload-status{margin-top:.65rem;margin-bottom:0;padding:.55rem .7rem;border:1px solid #334155;border-radius:8px;background:#0f172a}
+.upload-status.idle{color:#94a3b8}
+.upload-status.uploading{color:#93c5fd;border-color:#2563eb;background:rgba(37,99,235,.12)}
+.upload-status.success{color:#86efac;border-color:#16a34a;background:rgba(22,163,74,.12)}
+.upload-status.failed{color:#fca5a5;border-color:#dc2626;background:rgba(220,38,38,.12)}
 .modal-actions{display:flex;justify-content:flex-end;gap:.6rem;margin-top:1rem}
 
 .card{background:#111827;border:1px solid #1f2937;border-radius:12px;padding:1rem;margin-bottom:1rem}
 .card h3{font-size:1rem;color:#38bdf8;margin-bottom:.9rem}
+.online-users-head{display:flex;align-items:center;justify-content:space-between;gap:.8rem}
+.online-users-total{font-size:.8rem;color:#a7f3d0}
+.online-users-list{display:flex;flex-wrap:wrap;gap:.5rem}
+.online-user-item{display:flex;align-items:center;gap:.45rem;background:#0f172a;border:1px solid #334155;border-radius:999px;padding:.35rem .65rem;font-size:.8rem}
+.online-user-name{font-size:.75rem;color:#94a3b8}
+.online-dot{width:.5rem;height:.5rem;border-radius:999px;background:#22c55e;box-shadow:0 0 0 3px rgba(34,197,94,.2)}
 
 /* Post detail */
 .post-detail{margin-bottom:1.5rem;padding:1rem;background:#0f172a;border-radius:8px}
@@ -91,6 +103,7 @@ tr:hover{background:#1e293b}
 .comment-item .meta{font-size:.75rem;color:#94a3b8;margin-bottom:.3rem}
 .comment-item .text{font-size:.88rem}
 .comment-item .actions{margin-top:.4rem}
+.stack-trace{white-space:pre-wrap;background:#020617;border:1px solid #334155;border-radius:8px;padding:.8rem;font-size:.78rem;line-height:1.4;color:#cbd5e1;max-height:300px;overflow:auto}
 
 /* Toast */
 .toast{position:fixed;bottom:1.5rem;right:1.5rem;padding:.7rem 1.2rem;border-radius:8px;color:#fff;font-size:.85rem;z-index:300;opacity:0;transition:opacity .3s;pointer-events:none}
@@ -135,12 +148,37 @@ tr:hover{background:#1e293b}
   <div class="tab active" data-tab="users" onclick="switchTab('users')">Users</div>
   <div class="tab" data-tab="posts" onclick="switchTab('posts')">Posts</div>
   <div class="tab" data-tab="reports" onclick="switchTab('reports')">Reports</div>
+  <div class="tab" data-tab="crash" onclick="switchTab('crash')">Crash Logs</div>
   <div class="tab" data-tab="updates" onclick="switchTab('updates')">App Updates</div>
 </div>
 
 <div class="container">
   <!-- Users Section -->
   <div class="section active" id="sec-users">
+    <div class="card">
+      <div class="online-users-head">
+        <h3 style="margin:0">Online Users</h3>
+        <div>
+          <span class="online-users-total" id="onlineUsersTotal">0 online</span>
+          <button class="btn btn-secondary" onclick="loadOnlineUsers()" style="margin-left:.6rem">Refresh</button>
+        </div>
+      </div>
+      <div id="onlineUsersList" style="margin-top:.8rem">
+        <div class="form-note">Checking who is online…</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="online-users-head">
+        <h3 style="margin:0">Online in Last 24 Hours</h3>
+        <div>
+          <span class="online-users-total" id="recentOnlineUsersTotal">0 in last 24h</span>
+          <button class="btn btn-secondary" onclick="loadRecentOnlineUsers()" style="margin-left:.6rem">Refresh</button>
+        </div>
+      </div>
+      <div id="recentOnlineUsersList" style="margin-top:.8rem">
+        <div class="form-note">Loading recent user activity…</div>
+      </div>
+    </div>
     <div class="search-bar">
       <input type="text" id="userSearch" placeholder="Search users by username…" onkeydown="if(event.key==='Enter')searchUsers()">
       <button onclick="searchUsers()">Search</button>
@@ -179,6 +217,17 @@ tr:hover{background:#1e293b}
     </div>
     <div id="reportsTable"></div>
     <div class="pagination" id="reportsPagination"></div>
+  </div>
+
+  <!-- Crash Logs Section -->
+  <div class="section" id="sec-crash">
+    <div class="search-bar">
+      <input type="text" id="crashVersionFilter" placeholder="Filter by app version (for example 0.8.4beta)">
+      <input type="text" id="crashSearch" placeholder="Search by exception or username..." onkeydown="if(event.key==='Enter')searchCrashLogs()">
+      <button onclick="searchCrashLogs()">Search</button>
+    </div>
+    <div id="crashLogsTable"></div>
+    <div class="pagination" id="crashLogsPagination"></div>
   </div>
 
   <!-- App Updates Section -->
@@ -221,6 +270,28 @@ tr:hover{background:#1e293b}
         <button class="btn btn-success" onclick="saveUpdateSettings()">Save Settings</button>
       </div>
     </div>
+
+    <div class="card">
+      <h3>Release Mapping Upload (R8)</h3>
+      <div class="form-group">
+        <label for="mappingVersion">App Version</label>
+        <input type="text" id="mappingVersion" placeholder="0.8.4beta">
+      </div>
+      <div class="form-group">
+        <label for="mappingVersionCode">App Version Code (optional)</label>
+        <input type="number" id="mappingVersionCode" placeholder="35">
+      </div>
+      <div class="form-group">
+        <label for="mappingFile">mapping.txt file</label>
+        <input type="file" id="mappingFile" accept=".txt,.map,text/plain">
+      </div>
+      <div class="form-note">After every release upload, add the matching ProGuard/R8 mapping file here to deobfuscate crash reports.</div>
+      <div class="modal-actions" style="margin-top:0">
+        <button id="mappingUploadBtn" class="btn btn-info" onclick="uploadCrashMapping()">Upload Mapping</button>
+      </div>
+      <div id="mappingUploadStatus" class="form-note upload-status idle" aria-live="polite">No upload in progress.</div>
+      <div id="mappingList" style="margin-top:1rem"></div>
+    </div>
   </div>
 </div>
 
@@ -230,6 +301,15 @@ tr:hover{background:#1e293b}
     <button class="close-btn" onclick="closePostModal()">&times;</button>
     <h2>Post Detail</h2>
     <div id="postDetailContent"><div class="loading">Loading…</div></div>
+  </div>
+</div>
+
+<!-- Crash Detail Modal -->
+<div class="modal-overlay" id="crashModal">
+  <div class="modal">
+    <button class="close-btn" onclick="closeCrashModal()">&times;</button>
+    <h2>Crash Log Detail</h2>
+    <div id="crashDetailContent"><div class="loading">Loading…</div></div>
   </div>
 </div>
 
@@ -273,9 +353,10 @@ const TOKEN_KEY = 'admin_token';
 const USER_KEY = 'admin_user';
 let token = localStorage.getItem(TOKEN_KEY);
 let currentTab = 'users';
-let usersPage = 1, postsPage = 1, reportsPage = 1;
+let usersPage = 1, postsPage = 1, reportsPage = 1, crashLogsPage = 1;
 let editingCredentialUserId = null;
 let editingCredentialOriginalUsername = '';
+let onlineUsersPollTimer = null;
 
 function api(path, opts = {}) {
   const headers = { ...(opts.headers || {}) };
@@ -284,6 +365,7 @@ function api(path, opts = {}) {
 }
 
 function logout() {
+  stopOnlineUsersPolling();
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(USER_KEY);
   window.location.href = '/admin/login';
@@ -307,6 +389,7 @@ function toast(msg, type = 'success') {
     logout();
     return;
   }
+  startOnlineUsersPolling();
   searchUsers();
 })();
 
@@ -315,13 +398,114 @@ function switchTab(tab) {
   currentTab = tab;
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
   document.querySelectorAll('.section').forEach(s => s.classList.toggle('active', s.id === 'sec-' + tab));
-  if (tab === 'users') searchUsers();
-  else if (tab === 'posts') searchPosts();
+  if (tab === 'users') {
+    startOnlineUsersPolling();
+    searchUsers();
+  } else if (tab === 'posts') searchPosts();
   else if (tab === 'reports') searchReports();
-  else loadUpdateSettings();
+  else if (tab === 'crash') searchCrashLogs();
+  else {
+    loadUpdateSettings();
+    loadCrashMappings();
+  }
+  if (tab !== 'users') stopOnlineUsersPolling();
 }
 
 // ── Users ───────────────────────────────────
+function startOnlineUsersPolling() {
+  stopOnlineUsersPolling();
+  loadOnlineUsers();
+  loadRecentOnlineUsers();
+  onlineUsersPollTimer = setInterval(() => {
+    if (currentTab === 'users') {
+      loadOnlineUsers();
+      loadRecentOnlineUsers();
+    }
+  }, 15000);
+}
+
+function stopOnlineUsersPolling() {
+  if (!onlineUsersPollTimer) return;
+  clearInterval(onlineUsersPollTimer);
+  onlineUsersPollTimer = null;
+}
+
+async function loadOnlineUsers() {
+  const res = await api('/api/online-users');
+  if (!res.ok) {
+    document.getElementById('onlineUsersList').innerHTML = '<div class="form-note">Failed to load online users.</div>';
+    document.getElementById('onlineUsersTotal').textContent = '0 online';
+    return;
+  }
+  const data = await res.json();
+  renderOnlineUsers(data);
+}
+
+async function loadRecentOnlineUsers() {
+  const res = await api('/api/recently-online-users');
+  if (!res.ok) {
+    document.getElementById('recentOnlineUsersList').innerHTML = '<div class="form-note">Failed to load recent users.</div>';
+    document.getElementById('recentOnlineUsersTotal').textContent = '0 in last 24h';
+    return;
+  }
+  const data = await res.json();
+  renderRecentOnlineUsers(data);
+}
+
+function renderOnlineUsers(data) {
+  const users = Array.isArray(data.users) ? data.users : [];
+  const total = Number(data.total) || 0;
+  document.getElementById('onlineUsersTotal').textContent = total + ' online';
+
+  const container = document.getElementById('onlineUsersList');
+  if (!users.length) {
+    container.innerHTML = '<div class="form-note">No users are currently online.</div>';
+    return;
+  }
+
+  let html = '<div class="online-users-list">';
+  for (const user of users) {
+    const roleBadge = user.is_admin
+      ? '<span class="badge badge-admin">Admin</span>'
+      : '<span class="badge badge-user">User</span>';
+    html += `<div class="online-user-item">
+      <span class="online-dot"></span>
+      <span>${esc(user.username)}</span>
+      ${roleBadge}
+      <span class="online-user-name">(${esc(user.name || user.username)})</span>
+    </div>`;
+  }
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+function renderRecentOnlineUsers(data) {
+  const users = Array.isArray(data.users) ? data.users : [];
+  const total = Number(data.total) || 0;
+  document.getElementById('recentOnlineUsersTotal').textContent = total + ' in last 24h';
+
+  const container = document.getElementById('recentOnlineUsersList');
+  if (!users.length) {
+    container.innerHTML = '<div class="form-note">No users have been online in the past 24 hours.</div>';
+    return;
+  }
+
+  let html = '<div class="online-users-list">';
+  for (const user of users) {
+    const roleBadge = user.is_admin
+      ? '<span class="badge badge-admin">Admin</span>'
+      : '<span class="badge badge-user">User</span>';
+    html += `<div class="online-user-item">
+      <span class="online-dot"></span>
+      <span>${esc(user.username)}</span>
+      ${roleBadge}
+      <span class="online-user-name">(${esc(user.name || user.username)})</span>
+    </div>`;
+  }
+  html += '</div>';
+  container.innerHTML = html;
+}
+
 async function searchUsers(page = 1) {
   usersPage = page;
   const q = document.getElementById('userSearch').value.trim();
@@ -588,6 +772,108 @@ function handleReport(reportId, decision) {
   });
 }
 
+// ── Crash Logs ─────────────────────────────
+async function searchCrashLogs(page = 1) {
+  crashLogsPage = page;
+  const version = document.getElementById('crashVersionFilter').value.trim();
+  const query = document.getElementById('crashSearch').value.trim();
+  const qs = new URLSearchParams({
+    page: String(page),
+    limit: '20',
+  });
+  if (version) qs.set('app_version', version);
+  if (query) qs.set('q', query);
+
+  const res = await api('/api/crash-logs?' + qs.toString());
+  if (!res.ok) { toast('Failed to load crash logs', 'error'); return; }
+  const data = await res.json();
+  renderCrashLogsTable(data);
+}
+
+function renderCrashLogsTable(data) {
+  const { crash_logs: crashLogs, total, page, limit } = data;
+  const container = document.getElementById('crashLogsTable');
+
+  if (!crashLogs.length) {
+    container.innerHTML = '<div class="empty">No crash logs found</div>';
+    document.getElementById('crashLogsPagination').innerHTML = '';
+    return;
+  }
+
+  let html = '<table><thead><tr><th>ID</th><th>Version</th><th>User</th><th>Exception</th><th>Received</th><th>Status</th><th>Actions</th></tr></thead><tbody>';
+  for (const row of crashLogs) {
+    const receivedAt = row.received_at ? new Date(row.received_at).toLocaleString() : '-';
+    const userLabel = row.username ? esc(row.username) : '<span class="badge badge-user">Anonymous</span>';
+    const deobfuscatedBadge = row.is_deobfuscated
+      ? '<span class="badge badge-success">Deobfuscated</span>'
+      : (row.mapping_available
+        ? '<span class="badge badge-warning">Raw (mapping mismatch)</span>'
+        : '<span class="badge badge-danger">Raw (no mapping)</span>');
+    const exception = row.exception_type || '-';
+    const exceptionLabel = exception.length > 70 ? exception.slice(0, 70) + '…' : exception;
+
+    html += `<tr>
+      <td>${row.id}</td>
+      <td>${esc(row.app_version || '-')}</td>
+      <td>${userLabel}</td>
+      <td>${esc(exceptionLabel)}</td>
+      <td>${esc(receivedAt)}</td>
+      <td>${deobfuscatedBadge}</td>
+      <td><button class="btn btn-info" onclick="viewCrashLog(${row.id})">View</button></td>
+    </tr>`;
+  }
+  html += '</tbody></table>';
+  container.innerHTML = html;
+
+  renderPagination('crashLogsPagination', page, limit, total, searchCrashLogs);
+}
+
+async function viewCrashLog(crashLogId) {
+  document.getElementById('crashModal').classList.add('visible');
+  document.getElementById('crashDetailContent').innerHTML = '<div class="loading">Loading…</div>';
+  const res = await api('/api/crash-logs/' + crashLogId);
+  if (!res.ok) {
+    document.getElementById('crashDetailContent').innerHTML = '<div class="empty">Failed to load crash detail</div>';
+    return;
+  }
+  const data = await res.json();
+  renderCrashLogDetail(data.crash_log);
+}
+
+function renderCrashLogDetail(row) {
+  if (!row) {
+    document.getElementById('crashDetailContent').innerHTML = '<div class="empty">No data</div>';
+    return;
+  }
+  const deobfuscated = row.deobfuscated_stack_trace || '';
+  const raw = row.raw_stack_trace || '';
+  const occurred = row.occurred_at ? new Date(row.occurred_at).toLocaleString() : '-';
+  const received = row.received_at ? new Date(row.received_at).toLocaleString() : '-';
+  const deobfuscatedHtml = deobfuscated
+    ? `<h3 style="margin:0 0 .6rem 0;color:#94a3b8;font-size:.9rem">Deobfuscated stack trace</h3><div class="stack-trace">${esc(deobfuscated)}</div>`
+    : '<div class="form-note">No deobfuscated output yet. Upload the matching mapping file for this version.</div>';
+
+  document.getElementById('crashDetailContent').innerHTML = `
+    <div class="post-detail">
+      <div class="meta">Crash ID: ${row.id} · Event ID: ${esc(row.event_id || '-')}</div>
+      <div class="meta">Version: ${esc(row.app_version || '-')} · Version code: ${esc(row.app_version_code ?? '-')}</div>
+      <div class="meta">Exception: ${esc(row.exception_type || '-')}</div>
+      <div class="meta">User: ${esc(row.username || 'anonymous')}</div>
+      <div class="meta">Occurred: ${esc(occurred)} · Received: ${esc(received)}</div>
+      <div class="meta">Device: ${esc([row.device_manufacturer, row.device_model, row.os_version].filter(Boolean).join(' / ') || '-')}</div>
+      <div class="meta">Thread: ${esc(row.thread_name || '-')} · Build: ${esc(row.build_type || '-')}</div>
+      <div class="text">${esc(row.exception_message || 'No exception message')}</div>
+    </div>
+    ${deobfuscatedHtml}
+    <h3 style="margin:.9rem 0 .6rem 0;color:#94a3b8;font-size:.9rem">Raw stack trace</h3>
+    <div class="stack-trace">${esc(raw)}</div>
+  `;
+}
+
+function closeCrashModal() {
+  document.getElementById('crashModal').classList.remove('visible');
+}
+
 // ── App Updates ───────────────────────────
 async function loadUpdateSettings() {
   const res = await api('/api/app-update/settings');
@@ -630,6 +916,96 @@ async function saveUpdateSettings() {
     loadUpdateSettings();
   } else {
     toast(data.error || 'Failed to save settings', 'error');
+  }
+}
+
+async function loadCrashMappings() {
+  const res = await api('/api/crash-mappings?limit=30');
+  if (!res.ok) {
+    document.getElementById('mappingList').innerHTML = '<div class="form-note">Failed to load uploaded mappings.</div>';
+    return;
+  }
+  const data = await res.json();
+  renderMappingList(data.mappings || []);
+}
+
+function renderMappingList(mappings) {
+  const container = document.getElementById('mappingList');
+  if (!mappings.length) {
+    container.innerHTML = '<div class="form-note">No mapping file uploaded yet.</div>';
+    return;
+  }
+
+  let html = '<table><thead><tr><th>Version</th><th>Version Code</th><th>File</th><th>Uploaded At</th></tr></thead><tbody>';
+  for (const row of mappings) {
+    const uploadedAt = row.uploaded_at ? new Date(row.uploaded_at).toLocaleString() : '-';
+    html += `<tr>
+      <td>${esc(row.app_version || '-')}</td>
+      <td>${esc(row.app_version_code ?? '-')}</td>
+      <td>${esc(row.original_filename || '-')}</td>
+      <td>${esc(uploadedAt)}</td>
+    </tr>`;
+  }
+  html += '</tbody></table>';
+  container.innerHTML = html;
+}
+
+function setMappingUploadStatus(state, message) {
+  const statusElement = document.getElementById('mappingUploadStatus');
+  if (!statusElement) return;
+  statusElement.className = `form-note upload-status ${state}`;
+  statusElement.textContent = message;
+}
+
+async function uploadCrashMapping() {
+  const appVersion = document.getElementById('mappingVersion').value.trim();
+  const appVersionCode = document.getElementById('mappingVersionCode').value.trim();
+  const fileInput = document.getElementById('mappingFile');
+  const uploadButton = document.getElementById('mappingUploadBtn');
+  const file = fileInput.files && fileInput.files[0];
+
+  if (!appVersion) {
+    setMappingUploadStatus('failed', 'Upload failed: app version is required.');
+    toast('App version is required', 'error');
+    return;
+  }
+  if (!file) {
+    setMappingUploadStatus('failed', 'Upload failed: please choose a mapping file.');
+    toast('Please choose a mapping file', 'error');
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append('app_version', appVersion);
+  if (appVersionCode) formData.append('app_version_code', appVersionCode);
+  formData.append('mapping_file', file);
+
+  uploadButton.disabled = true;
+  uploadButton.textContent = 'Uploading...';
+  setMappingUploadStatus('uploading', `Upload in progress: ${file.name}`);
+
+  try {
+    const res = await api('/api/crash-mappings', {
+      method: 'POST',
+      body: formData,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) {
+      setMappingUploadStatus('success', `Upload successful for version ${appVersion}.`);
+      toast('Mapping uploaded');
+      fileInput.value = '';
+      loadCrashMappings();
+      if (currentTab === 'crash') searchCrashLogs(crashLogsPage);
+    } else {
+      setMappingUploadStatus('failed', `Upload failed: ${data.error || 'server rejected the file.'}`);
+      toast(data.error || 'Failed to upload mapping', 'error');
+    }
+  } catch (error) {
+    setMappingUploadStatus('failed', 'Upload failed: network/server error.');
+    toast('Failed to upload mapping', 'error');
+  } finally {
+    uploadButton.disabled = false;
+    uploadButton.textContent = 'Upload Mapping';
   }
 }
 

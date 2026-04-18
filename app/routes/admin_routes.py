@@ -20,6 +20,7 @@ from app.models.vote_model import Vote
 from app.models.follow_model import Follow
 from app.services import report_service
 from app.services import app_update_service
+from app.services import crash_log_service
 from app.services.post_service import _build_media_url
 
 admin_bp = Blueprint(
@@ -115,6 +116,71 @@ def admin_update_app_update_settings():
     return jsonify({"message": "Settings updated", "settings": settings}), 200
 
 
+# ── Crash logs + mappings ───────────────────────────────────────────
+
+@admin_bp.route("/api/crash-logs", methods=["GET"])
+@admin_required
+def admin_list_crash_logs():
+    page = max(1, request.args.get("page", 1, type=int))
+    limit = min(50, max(1, request.args.get("limit", 20, type=int)))
+    app_version = request.args.get("app_version")
+    query = request.args.get("q")
+
+    payload = crash_log_service.list_crash_logs_for_admin(
+        page=page,
+        limit=limit,
+        app_version=app_version,
+        query=query,
+    )
+    return jsonify(payload), 200
+
+
+@admin_bp.route("/api/crash-logs/<int:crash_log_id>", methods=["GET"])
+@admin_required
+def admin_get_crash_log(crash_log_id):
+    try:
+        payload = crash_log_service.get_crash_log_detail_for_admin(crash_log_id)
+    except ValueError as e:
+        message = str(e)
+        if message == "Crash log not found":
+            return jsonify({"error": message}), 404
+        return jsonify({"error": message}), 400
+    return jsonify({"crash_log": payload}), 200
+
+
+@admin_bp.route("/api/crash-mappings", methods=["GET"])
+@admin_required
+def admin_list_crash_mappings():
+    limit = min(100, max(1, request.args.get("limit", 50, type=int)))
+    mappings = crash_log_service.list_mapping_files_for_admin(limit=limit)
+    return jsonify({"mappings": mappings}), 200
+
+
+@admin_bp.route("/api/crash-mappings", methods=["POST"])
+@admin_required
+def admin_upload_crash_mapping():
+    uploaded_file = request.files.get("mapping_file")
+    if uploaded_file is None:
+        return jsonify({"error": "mapping_file is required"}), 400
+
+    admin_username = get_jwt_identity()
+    app_version = request.form.get("app_version")
+    app_version_code = request.form.get("app_version_code")
+
+    try:
+        mapping_payload = crash_log_service.upload_mapping_file_for_admin(
+            app_version=app_version,
+            mapping_bytes=uploaded_file.read(),
+            original_filename=uploaded_file.filename,
+            admin_username=admin_username,
+            app_version_code=app_version_code,
+        )
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+    return jsonify({"message": "Mapping file uploaded", "mapping": mapping_payload}), 200
+
+
 # ── Search ───────────────────────────────────────────────────────────
 
 @admin_bp.route("/api/users", methods=["GET"])
@@ -155,6 +221,65 @@ def admin_search_users():
         })
 
     return jsonify({"users": result, "total": total, "page": page, "limit": limit}), 200
+
+
+@admin_bp.route("/api/online-users", methods=["GET"])
+@admin_required
+def admin_list_online_users():
+    from app.socket_events import get_online_usernames
+
+    online_usernames = get_online_usernames()
+    users_payload = _build_admin_user_payload(online_usernames)
+    return jsonify({"users": users_payload, "total": len(users_payload)}), 200
+
+
+@admin_bp.route("/api/recently-online-users", methods=["GET"])
+@admin_required
+def admin_list_recently_online_users():
+    from app.socket_events import get_recently_online_usernames
+
+    recent_usernames = get_recently_online_usernames(window_hours=24)
+    users_payload = _build_admin_user_payload(recent_usernames)
+    return jsonify({"users": users_payload, "total": len(users_payload)}), 200
+
+
+def _build_admin_user_payload(usernames):
+    if not usernames:
+        return []
+
+    users = (
+        User.query
+        .filter(User.username.in_(usernames))
+        .order_by(User.username.asc())
+        .all()
+    )
+
+    user_ids = [user.id for user in users]
+    profiles = {}
+    if user_ids:
+        for profile in Profile.query.filter(Profile.user_id.in_(user_ids)).all():
+            profiles[profile.user_id] = profile
+
+    admin_ids = set()
+    if user_ids:
+        admin_ids = {
+            admin.user_id
+            for admin in AdminUser.query.filter(AdminUser.user_id.in_(user_ids)).all()
+        }
+
+    payload = []
+    for user in users:
+        profile = profiles.get(user.id)
+        payload.append(
+            {
+                "id": user.id,
+                "username": user.username,
+                "name": profile.name if profile else user.username,
+                "is_admin": user.id in admin_ids,
+            }
+        )
+
+    return payload
 
 
 @admin_bp.route("/api/posts", methods=["GET"])

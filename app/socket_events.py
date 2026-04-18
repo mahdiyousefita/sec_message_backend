@@ -1,6 +1,6 @@
 from flask import current_app, request, session
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from flask_jwt_extended import decode_token
 from flask_socketio import emit, join_room
 
@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 _registered = False
 _online_users = {}
+_recently_online_users = {}
 
 
 def _extract_access_token(auth):
@@ -43,6 +44,50 @@ def _set_user_offline(username):
 
 def is_user_online(username):
     return _online_users.get(username, 0) > 0
+
+
+def get_online_usernames():
+    return sorted(_online_users.keys())
+
+
+def _normalize_utc(timestamp):
+    if not isinstance(timestamp, datetime):
+        return None
+    if timestamp.tzinfo is None:
+        return timestamp.replace(tzinfo=timezone.utc)
+    return timestamp.astimezone(timezone.utc)
+
+
+def _touch_recently_online(username, seen_at=None):
+    _recently_online_users[username] = _normalize_utc(seen_at) or datetime.now(timezone.utc)
+
+
+def get_recently_online_usernames(window_hours=24):
+    try:
+        resolved_window_hours = max(1, int(window_hours))
+    except (TypeError, ValueError):
+        resolved_window_hours = 24
+
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(hours=resolved_window_hours)
+
+    # Keep users with active sockets in the rolling window even during long sessions.
+    for username in _online_users.keys():
+        _touch_recently_online(username, seen_at=now)
+
+    active_usernames = []
+    stale_usernames = []
+    for username, last_seen in _recently_online_users.items():
+        normalized_last_seen = _normalize_utc(last_seen)
+        if normalized_last_seen is None or normalized_last_seen < cutoff:
+            stale_usernames.append(username)
+        else:
+            active_usernames.append(username)
+
+    for username in stale_usernames:
+        _recently_online_users.pop(username, None)
+
+    return sorted(active_usernames)
 
 
 def register_socket_events():
@@ -138,6 +183,7 @@ def register_socket_events():
         session["username"] = username
         join_room(username)
         _set_user_online(username)
+        _touch_recently_online(username)
 
         _emit_pending_messages_chunk(username)
         _emit_pending_delete_events(username)
@@ -186,6 +232,7 @@ def register_socket_events():
         username = session.get("username")
         if username:
             _set_user_offline(username)
+            _touch_recently_online(username)
             socketio.emit("user_status", {"username": username, "online": False})
 
     @socketio.on("get_user_status")

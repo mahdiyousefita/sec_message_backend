@@ -62,6 +62,17 @@ def update_my_profile():
         return jsonify({"error": str(e)}), 400
 
 
+@profile_bp.route("/profiles/me", methods=["DELETE"])
+@jwt_required()
+def delete_my_account():
+    username = get_jwt_identity()
+    try:
+        profile_service.delete_account(username=username)
+        return jsonify({"message": "Account deleted permanently"}), 200
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+
+
 @profile_bp.route("/profiles/<username>", methods=["GET"])
 @jwt_required(optional=True)
 def get_profile(username):

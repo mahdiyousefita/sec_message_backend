@@ -3,11 +3,28 @@ import uuid
 
 from flask import current_app, has_request_context, request
 from minio.error import S3Error
+from sqlalchemy import or_
 
 from app.db import db
 from app.extensions.minio_client import get_minio_client
+from app.models.activity_notification_model import ActivityNotification
+from app.models.admin_model import AdminUser
+from app.models.block_model import Block
+from app.models.comment_model import Comment
+from app.models.crash_log_model import CrashLog
+from app.models.follow_model import Follow
+from app.models.group_model import Group, GroupMember
+from app.models.media_model import Media
+from app.models.pending_registration_model import PendingRegistration
+from app.models.playlist_track_model import PlaylistTrack
 from app.models.post_model import Post
+from app.models.profile_model import Profile
+from app.models.profile_video_model import ProfileVideo
+from app.models.report_model import PostReport
+from app.models.user_model import User
+from app.models.vote_model import Vote
 from app.repositories import profile_video_repository, user_repository
+from app.repositories import message_repository
 from app.repositories.follow_repository import count_followers, count_following
 from app.repositories.profile_repository import create_profile_for_user, get_by_user_id
 from app.services import block_service
@@ -299,3 +316,215 @@ def get_profile_posts(
         limit=limit,
         viewer_username=viewer_username,
     )
+
+
+def _expand_comment_descendants(seed_comment_ids: list[int]) -> set[int]:
+    all_ids = {int(comment_id) for comment_id in seed_comment_ids if comment_id is not None}
+    frontier = set(all_ids)
+
+    while frontier:
+        child_rows = (
+            db.session.query(Comment.id)
+            .filter(Comment.parent_id.in_(frontier))
+            .all()
+        )
+        next_frontier = {
+            int(row[0])
+            for row in child_rows
+            if row and row[0] is not None and int(row[0]) not in all_ids
+        }
+        if not next_frontier:
+            break
+        all_ids.update(next_frontier)
+        frontier = next_frontier
+
+    return all_ids
+
+
+def _collect_account_media_object_names(user_id: int):
+    object_names = set()
+
+    profile = get_by_user_id(user_id)
+    if profile and profile.image_object_name:
+        object_names.add(profile.image_object_name)
+
+    profile_video = profile_video_repository.get_by_user_id(user_id)
+    if profile_video and profile_video.video_object_name:
+        object_names.add(profile_video.video_object_name)
+
+    post_media_rows = (
+        db.session.query(Media.object_name)
+        .join(Post, Post.id == Media.post_id)
+        .filter(Post.author_id == user_id)
+        .all()
+    )
+    for row in post_media_rows:
+        if row and row[0]:
+            object_names.add(row[0])
+
+    return sorted(object_names)
+
+
+def delete_account(username: str):
+    user = user_repository.get_by_username(username)
+    if not user:
+        raise ValueError("User not found")
+
+    user_id = int(user.id)
+    all_usernames = [
+        row[0]
+        for row in db.session.query(User.username).all()
+        if row and row[0]
+    ]
+    media_object_names = _collect_account_media_object_names(user_id)
+
+    user_post_ids = [
+        int(row[0])
+        for row in db.session.query(Post.id).filter(Post.author_id == user_id).all()
+        if row and row[0] is not None
+    ]
+
+    post_media_ids = []
+    if user_post_ids:
+        post_media_ids = [
+            int(row[0])
+            for row in (
+                db.session.query(Media.id)
+                .filter(Media.post_id.in_(user_post_ids))
+                .all()
+            )
+            if row and row[0] is not None
+        ]
+
+    comment_ids_on_user_posts = []
+    if user_post_ids:
+        comment_ids_on_user_posts = [
+            int(row[0])
+            for row in (
+                db.session.query(Comment.id)
+                .filter(Comment.post_id.in_(user_post_ids))
+                .all()
+            )
+            if row and row[0] is not None
+        ]
+
+    authored_comment_ids = [
+        int(row[0])
+        for row in db.session.query(Comment.id).filter(Comment.author_id == user_id).all()
+        if row and row[0] is not None
+    ]
+
+    removable_comment_ids = set(comment_ids_on_user_posts)
+    removable_comment_ids.update(
+        _expand_comment_descendants(authored_comment_ids)
+    )
+
+    for object_name in media_object_names:
+        _delete_media_object(object_name)
+
+    message_repository.purge_user_data(
+        username=username,
+        candidate_usernames=all_usernames,
+    )
+
+    try:
+        if removable_comment_ids:
+            Vote.query.filter(
+                Vote.target_type == "comment",
+                Vote.target_id.in_(list(removable_comment_ids)),
+            ).delete(synchronize_session=False)
+
+        Vote.query.filter_by(user_id=user_id).delete(synchronize_session=False)
+
+        if post_media_ids:
+            PlaylistTrack.query.filter(
+                PlaylistTrack.media_id.in_(post_media_ids)
+            ).delete(synchronize_session=False)
+
+        PlaylistTrack.query.filter_by(user_id=user_id).delete(synchronize_session=False)
+
+        if removable_comment_ids:
+            Comment.query.filter(
+                Comment.id.in_(list(removable_comment_ids))
+            ).delete(synchronize_session=False)
+        else:
+            Comment.query.filter_by(author_id=user_id).delete(synchronize_session=False)
+
+        if user_post_ids:
+            Vote.query.filter(
+                Vote.target_type == "post",
+                Vote.target_id.in_(user_post_ids),
+            ).delete(synchronize_session=False)
+            Post.query.filter(
+                Post.quoted_post_id.in_(user_post_ids)
+            ).update(
+                {Post.quoted_post_id: None},
+                synchronize_session=False,
+            )
+            ActivityNotification.query.filter(
+                ActivityNotification.target_type == "post",
+                ActivityNotification.target_id.in_(user_post_ids),
+            ).delete(synchronize_session=False)
+            PostReport.query.filter(
+                PostReport.post_id.in_(user_post_ids)
+            ).delete(synchronize_session=False)
+            Media.query.filter(
+                Media.post_id.in_(user_post_ids)
+            ).delete(synchronize_session=False)
+            Post.query.filter(
+                Post.id.in_(user_post_ids)
+            ).delete(synchronize_session=False)
+
+        if removable_comment_ids:
+            ActivityNotification.query.filter(
+                ActivityNotification.target_type == "comment",
+                ActivityNotification.target_id.in_(list(removable_comment_ids)),
+            ).delete(synchronize_session=False)
+
+        ActivityNotification.query.filter(
+            or_(
+                ActivityNotification.recipient_id == user_id,
+                ActivityNotification.actor_id == user_id,
+            )
+        ).delete(synchronize_session=False)
+
+        Follow.query.filter(
+            (Follow.follower_id == user_id) | (Follow.following_id == user_id)
+        ).delete(synchronize_session=False)
+
+        Block.query.filter(
+            (Block.blocker_id == user_id) | (Block.blocked_id == user_id)
+        ).delete(synchronize_session=False)
+
+        GroupMember.query.filter(
+            GroupMember.user_id == user_id
+        ).delete(synchronize_session=False)
+        Group.query.filter(
+            Group.creator_id == user_id
+        ).delete(synchronize_session=False)
+
+        PostReport.query.filter(
+            PostReport.handled_by_admin_id == user_id
+        ).update(
+            {PostReport.handled_by_admin_id: None},
+            synchronize_session=False,
+        )
+        PostReport.query.filter(
+            PostReport.reporter_id == user_id
+        ).delete(synchronize_session=False)
+
+        ProfileVideo.query.filter_by(user_id=user_id).delete(synchronize_session=False)
+        PendingRegistration.query.filter_by(username=username).delete(synchronize_session=False)
+        CrashLog.query.filter(
+            or_(
+                CrashLog.user_id == user_id,
+                CrashLog.username_snapshot == username,
+            )
+        ).delete(synchronize_session=False)
+        AdminUser.query.filter_by(user_id=user_id).delete(synchronize_session=False)
+        Profile.query.filter_by(user_id=user_id).delete(synchronize_session=False)
+        User.query.filter_by(id=user_id).delete(synchronize_session=False)
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        raise
