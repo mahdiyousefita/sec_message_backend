@@ -224,8 +224,13 @@ tr:hover{background:#1e293b}
     <div class="search-bar">
       <input type="text" id="crashVersionFilter" placeholder="Filter by app version (for example 0.8.4beta)">
       <input type="text" id="crashSearch" placeholder="Search by exception or username..." onkeydown="if(event.key==='Enter')searchCrashLogs()">
-      <button onclick="searchCrashLogs()">Search</button>
+      <label style="display:flex;align-items:center;gap:.35rem;font-size:.82rem;color:#94a3b8;padding:0 .45rem;">
+        <input type="checkbox" id="crashQueueOnly">
+        Queue reliability only
+      </label>
+      <button id="crashSearchBtn" onclick="searchCrashLogs()">Search</button>
     </div>
+    <div id="crashLogsLoadState" class="form-note">Ready.</div>
     <div id="crashLogsTable"></div>
     <div class="pagination" id="crashLogsPagination"></div>
   </div>
@@ -354,6 +359,7 @@ const USER_KEY = 'admin_user';
 let token = localStorage.getItem(TOKEN_KEY);
 let currentTab = 'users';
 let usersPage = 1, postsPage = 1, reportsPage = 1, crashLogsPage = 1;
+let crashLogsRequestToken = 0;
 let editingCredentialUserId = null;
 let editingCredentialOriginalUsername = '';
 let onlineUsersPollTimer = null;
@@ -773,37 +779,78 @@ function handleReport(reportId, decision) {
 }
 
 // ── Crash Logs ─────────────────────────────
+function setCrashLogsLoadingState(isLoading) {
+  const stateEl = document.getElementById('crashLogsLoadState');
+  const btn = document.getElementById('crashSearchBtn');
+  if (isLoading) {
+    stateEl.textContent = 'Loading crash logs...';
+    btn.disabled = true;
+    return;
+  }
+  btn.disabled = false;
+}
+
 async function searchCrashLogs(page = 1) {
+  const requestToken = ++crashLogsRequestToken;
   crashLogsPage = page;
   const version = document.getElementById('crashVersionFilter').value.trim();
   const query = document.getElementById('crashSearch').value.trim();
+  const queueOnly = document.getElementById('crashQueueOnly').checked;
+  const container = document.getElementById('crashLogsTable');
+  if (!container.innerHTML.trim()) {
+    container.innerHTML = '<div class="loading">Loading crash logs…</div>';
+  }
+  setCrashLogsLoadingState(true);
   const qs = new URLSearchParams({
     page: String(page),
     limit: '20',
   });
   if (version) qs.set('app_version', version);
   if (query) qs.set('q', query);
+  if (queueOnly) qs.set('exception_prefix', 'SocketOutboundQueue');
 
-  const res = await api('/api/crash-logs?' + qs.toString());
-  if (!res.ok) { toast('Failed to load crash logs', 'error'); return; }
-  const data = await res.json();
-  renderCrashLogsTable(data);
+  try {
+    const res = await api('/api/crash-logs?' + qs.toString());
+    if (requestToken !== crashLogsRequestToken) return;
+    if (!res.ok) {
+      document.getElementById('crashLogsLoadState').textContent = 'Failed to load crash logs.';
+      toast('Failed to load crash logs', 'error');
+      return;
+    }
+    const data = await res.json();
+    renderCrashLogsTable(data);
+  } catch (err) {
+    if (requestToken !== crashLogsRequestToken) return;
+    document.getElementById('crashLogsLoadState').textContent = 'Failed to load crash logs.';
+    toast('Failed to load crash logs', 'error');
+  } finally {
+    if (requestToken === crashLogsRequestToken) {
+      setCrashLogsLoadingState(false);
+    }
+  }
 }
 
 function renderCrashLogsTable(data) {
   const { crash_logs: crashLogs, total, page, limit } = data;
   const container = document.getElementById('crashLogsTable');
+  const stateEl = document.getElementById('crashLogsLoadState');
 
   if (!crashLogs.length) {
     container.innerHTML = '<div class="empty">No crash logs found</div>';
     document.getElementById('crashLogsPagination').innerHTML = '';
+    stateEl.textContent = `Loaded 0 crash logs.`;
     return;
   }
 
-  let html = '<table><thead><tr><th>ID</th><th>Version</th><th>User</th><th>Exception</th><th>Received</th><th>Status</th><th>Actions</th></tr></thead><tbody>';
+  stateEl.textContent = `Loaded ${crashLogs.length} crash groups (${total} total), sorted by highest count.`;
+  let html = '<table><thead><tr><th>ID</th><th>Version</th><th>Count</th><th>Users</th><th>Exception</th><th>Last Seen</th><th>Status</th><th>Actions</th></tr></thead><tbody>';
   for (const row of crashLogs) {
     const receivedAt = row.received_at ? new Date(row.received_at).toLocaleString() : '-';
-    const userLabel = row.username ? esc(row.username) : '<span class="badge badge-user">Anonymous</span>';
+    const affectedUsers = Array.isArray(row.affected_users) ? row.affected_users : [];
+    const countLabel = Number(row.occurrence_count || 1);
+    const userLabel = affectedUsers.length
+      ? esc(affectedUsers.slice(0, 4).join(', ')) + (affectedUsers.length > 4 ? ` +${affectedUsers.length - 4}` : '')
+      : (row.username ? esc(row.username) : '<span class="badge badge-user">Anonymous</span>');
     const deobfuscatedBadge = row.is_deobfuscated
       ? '<span class="badge badge-success">Deobfuscated</span>'
       : (row.mapping_available
@@ -811,21 +858,46 @@ function renderCrashLogsTable(data) {
         : '<span class="badge badge-danger">Raw (no mapping)</span>');
     const exception = row.exception_type || '-';
     const exceptionLabel = exception.length > 70 ? exception.slice(0, 70) + '…' : exception;
+    const queueBadge = exception.startsWith('SocketOutboundQueue')
+      ? '<span class="badge badge-warning">Queue reliability</span> '
+      : '';
 
     html += `<tr>
       <td>${row.id}</td>
       <td>${esc(row.app_version || '-')}</td>
+      <td>${esc(countLabel)}</td>
       <td>${userLabel}</td>
-      <td>${esc(exceptionLabel)}</td>
+      <td>${queueBadge}${esc(exceptionLabel)}</td>
       <td>${esc(receivedAt)}</td>
       <td>${deobfuscatedBadge}</td>
-      <td><button class="btn btn-info" onclick="viewCrashLog(${row.id})">View</button></td>
+      <td>
+        <button class="btn btn-info" onclick="viewCrashLog(${row.id})">View</button>
+        <button class="btn btn-success" onclick="resolveCrashLog(${row.id})">Resolve</button>
+      </td>
     </tr>`;
   }
   html += '</tbody></table>';
   container.innerHTML = html;
 
   renderPagination('crashLogsPagination', page, limit, total, searchCrashLogs);
+}
+
+async function resolveCrashLog(crashLogId) {
+  confirm_action('Mark this crash group as resolved and remove all matching logs?', async () => {
+    const res = await api('/api/crash-logs/' + crashLogId + '/resolve', {
+      method: 'POST',
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      toast(data.error || 'Failed to resolve crash group', 'error');
+      return;
+    }
+    toast(`Crash group resolved (${data.deleted_count || 0} logs removed).`);
+    if (document.getElementById('crashModal').classList.contains('visible')) {
+      closeCrashModal();
+    }
+    searchCrashLogs(crashLogsPage);
+  });
 }
 
 async function viewCrashLog(crashLogId) {
@@ -849,6 +921,13 @@ function renderCrashLogDetail(row) {
   const raw = row.raw_stack_trace || '';
   const occurred = row.occurred_at ? new Date(row.occurred_at).toLocaleString() : '-';
   const received = row.received_at ? new Date(row.received_at).toLocaleString() : '-';
+  const affectedUsers = Array.isArray(row.affected_users) && row.affected_users.length
+    ? row.affected_users.join(', ')
+    : (row.username || 'anonymous');
+  const queueBadge = (row.exception_type || '').startsWith('SocketOutboundQueue')
+    ? '<span class="badge badge-warning">Queue reliability event</span>'
+    : '';
+  const queueMeta = queueBadge ? `<div class="meta">${queueBadge}</div>` : '';
   const deobfuscatedHtml = deobfuscated
     ? `<h3 style="margin:0 0 .6rem 0;color:#94a3b8;font-size:.9rem">Deobfuscated stack trace</h3><div class="stack-trace">${esc(deobfuscated)}</div>`
     : '<div class="form-note">No deobfuscated output yet. Upload the matching mapping file for this version.</div>';
@@ -858,11 +937,17 @@ function renderCrashLogDetail(row) {
       <div class="meta">Crash ID: ${row.id} · Event ID: ${esc(row.event_id || '-')}</div>
       <div class="meta">Version: ${esc(row.app_version || '-')} · Version code: ${esc(row.app_version_code ?? '-')}</div>
       <div class="meta">Exception: ${esc(row.exception_type || '-')}</div>
+      ${queueMeta}
+      <div class="meta">Occurrences: ${esc(row.occurrence_count || 1)}</div>
+      <div class="meta">Affected users: ${esc(affectedUsers)}</div>
       <div class="meta">User: ${esc(row.username || 'anonymous')}</div>
       <div class="meta">Occurred: ${esc(occurred)} · Received: ${esc(received)}</div>
       <div class="meta">Device: ${esc([row.device_manufacturer, row.device_model, row.os_version].filter(Boolean).join(' / ') || '-')}</div>
       <div class="meta">Thread: ${esc(row.thread_name || '-')} · Build: ${esc(row.build_type || '-')}</div>
       <div class="text">${esc(row.exception_message || 'No exception message')}</div>
+      <div class="modal-actions">
+        <button class="btn btn-success" onclick="resolveCrashLog(${row.id})">Mark Resolved</button>
+      </div>
     </div>
     ${deobfuscatedHtml}
     <h3 style="margin:.9rem 0 .6rem 0;color:#94a3b8;font-size:.9rem">Raw stack trace</h3>

@@ -48,6 +48,18 @@ def get_contacts():
             "contacts": contact_service.get_contacts(username)
         })
 
+
+@contact_bp.route("/delta", methods=["GET"])
+@jwt_required()
+def get_contacts_delta():
+    username = get_jwt_identity()
+    users = request.args.getlist("user")
+    if not users:
+        raw_users = request.args.get("users", "")
+        users = [item for item in raw_users.split(",") if item]
+
+    return jsonify(contact_service.get_contacts_delta(username, users))
+
 @contact_bp.route("/<username>/public-key", methods=["GET"])
 @jwt_required()
 def get_contact_public_key(username):

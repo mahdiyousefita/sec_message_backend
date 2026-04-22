@@ -16,17 +16,31 @@ gunicorn -k eventlet -w 1 -b 0.0.0.0:5000 'run:app'
 - Enable worker-backed side effects (activity fan-out, group side effects, cleanup tasks, media post-process hooks):
 
 ```bash
+APP_ENV=production
 ASYNC_TASKS_ENABLED=true
 ASYNC_TASK_QUEUE_NAME=sec_message:async_tasks
+ASYNC_TASK_RETRY_QUEUE_NAME=sec_message:async_tasks:retry
+ASYNC_TASK_FAILED_QUEUE_NAME=sec_message:async_tasks:failed
 ASYNC_TASK_WORKER_BLOCK_TIMEOUT_SECONDS=5
 ASYNC_TASK_MAX_RETRIES=2
-ASYNC_TASK_INLINE_FALLBACK=true
+ASYNC_TASK_RETRY_BACKOFF_BASE_SECONDS=1.0
+ASYNC_TASK_RETRY_BACKOFF_MAX_SECONDS=30.0
+ASYNC_TASK_MIN_WORKER_COUNT=1
+ASYNC_TASK_WORKER_HEARTBEAT_STALE_SECONDS=30
+ASYNC_TASK_WORKER_STARTUP_STRICT=true
+ASYNC_TASK_INLINE_FALLBACK=false
 ```
 
 - Run at least one dedicated worker process:
 
 ```bash
 python run_async_worker.py
+```
+
+- Optional worker ID for clearer health logs:
+
+```bash
+python run_async_worker.py --worker-id worker-a
 ```
 
 - Optional: process a single pending task (debug):
@@ -93,3 +107,12 @@ MODERATION_CLEANUP_INTERVAL_SECONDS=300
 
 - If `ASYNC_TASKS_ENABLED=true`, cleanup scheduler enqueues cleanup jobs and `run_async_worker.py` executes them.
 - If the queue is unavailable/disabled, cleanup falls back to inline execution in the scheduler.
+
+## Group side-effects behavior in production
+
+- With `APP_ENV=production`, `send_group_message` requires worker-backed side-effect enqueue.
+- If enqueue fails, the socket handler returns `message_error` and does **not** run inline side-effects.
+- This keeps production latency predictable and makes worker failure/retry visibility explicit in logs.
+- Exhausted async tasks are moved to `ASYNC_TASK_FAILED_QUEUE_NAME` (dead-letter list).
+- Worker and API startup logs now include queue depth, retry depth, failed depth, and processing failure rate counters.
+- `run_async_worker.py` sets `ASYNC_TASK_SKIP_STARTUP_WORKER_CHECK=true` automatically so the first worker can boot before API strict checks pass.

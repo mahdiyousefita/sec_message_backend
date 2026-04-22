@@ -19,7 +19,7 @@ class TestApiRoutes(unittest.TestCase):
 
         from app import create_app
         from app.db import db
-        from app.services import auth_service
+        from app.services import auth_service, message_service
         from app.models.comment_model import Comment
         from app.repositories import message_repository
         from app.extensions import redis_client as redis_module
@@ -30,6 +30,7 @@ class TestApiRoutes(unittest.TestCase):
         cls.client = cls.app.test_client()
         cls.db = db
         cls.auth_service = auth_service
+        cls.message_service = message_service
         cls.Comment = Comment
         cls.socket_events = socket_events
 
@@ -47,8 +48,7 @@ class TestApiRoutes(unittest.TestCase):
         for patcher in cls.redis_patches:
             patcher.stop()
 
-        cls.socket_events._online_users.clear()
-        cls.socket_events._recently_online_users.clear()
+        cls.socket_events._user_sids.clear()
         cls.socket_events._registered = False
 
         if os.path.exists(cls.db_path):
@@ -58,8 +58,7 @@ class TestApiRoutes(unittest.TestCase):
         with self.app.app_context():
             self.db.drop_all()
             self.db.create_all()
-        self.socket_events._online_users.clear()
-        self.socket_events._recently_online_users.clear()
+        self.socket_events._user_sids.clear()
         self.fake_redis.clear()
         uploads_dir = os.path.join(self.app.static_folder, "uploads")
         if os.path.isdir(uploads_dir):
@@ -280,8 +279,9 @@ class TestApiRoutes(unittest.TestCase):
         self._make_admin("admin")
         admin_headers = self._auth_header("admin")
 
-        self.socket_events._online_users["bob"] = 2
-        self.socket_events._online_users["alice"] = 1
+        self.socket_events._set_user_online("bob", sid="bob-sid-1")
+        self.socket_events._set_user_online("bob", sid="bob-sid-2")
+        self.socket_events._set_user_online("alice", sid="alice-sid-1")
 
         response = self.client.get("/admin/api/online-users", headers=admin_headers)
         self.assertEqual(response.status_code, 200)
@@ -304,9 +304,9 @@ class TestApiRoutes(unittest.TestCase):
         admin_headers = self._auth_header("admin")
 
         now = datetime.now(timezone.utc)
-        self.socket_events._recently_online_users["alice"] = now - timedelta(hours=2)
-        self.socket_events._recently_online_users["bob"] = now - timedelta(hours=26)
-        self.socket_events._online_users["charlie"] = 1
+        self.socket_events._touch_recently_online("alice", seen_at=now - timedelta(hours=2))
+        self.socket_events._touch_recently_online("bob", seen_at=now - timedelta(hours=26))
+        self.socket_events._set_user_online("charlie", sid="charlie-sid-1")
 
         response = self.client.get("/admin/api/recently-online-users", headers=admin_headers)
         self.assertEqual(response.status_code, 200)
@@ -317,7 +317,12 @@ class TestApiRoutes(unittest.TestCase):
             [user["username"] for user in payload["users"]],
             ["alice", "charlie"],
         )
-        self.assertNotIn("bob", self.socket_events._recently_online_users)
+        self.assertIsNone(
+            self.fake_redis.zscore(
+                self.socket_events.PRESENCE_RECENTLY_ONLINE_KEY,
+                "bob",
+            )
+        )
 
     def test_version_check_endpoint_returns_force_optional_and_none(self):
         self._register("admin")
@@ -413,6 +418,226 @@ class TestApiRoutes(unittest.TestCase):
     def test_create_post_requires_auth(self):
         response = self.client.post("/api/posts", json={"text": "hello"})
         self.assertEqual(response.status_code, 401)
+
+    def test_private_history_survives_transient_redis_reset(self):
+        self._register("alice")
+        self._register("bob")
+        headers = self._auth_header("alice")
+
+        with self.app.app_context():
+            payload = self.message_service.send_message(
+                "alice",
+                "bob",
+                "enc-history",
+                "history-key",
+            )
+            self.assertIsNotNone(payload.get("message_id"))
+
+        self.fake_redis.clear()
+
+        response = self.client.get(
+            "/api/messages/history/private/bob",
+            headers=headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        self.assertEqual(body["chat_id"], "bob")
+        self.assertEqual(len(body["messages"]), 1)
+        self.assertEqual(body["messages"][0]["message"], "enc-history")
+        self.assertEqual(body["messages"][0]["encrypted_key"], "history-key")
+
+    def test_private_history_uses_sender_cipher_for_sender_view(self):
+        self._register("alice")
+        self._register("bob")
+        alice_headers = self._auth_header("alice")
+        bob_headers = self._auth_header("bob")
+
+        with self.app.app_context():
+            payload = self.message_service.send_message(
+                "alice",
+                "bob",
+                "enc-for-bob",
+                "bob-key",
+                sender_encrypted_message="enc-for-alice",
+                sender_encrypted_key="alice-key",
+            )
+            self.assertIsNotNone(payload.get("message_id"))
+
+        alice_response = self.client.get(
+            "/api/messages/history/private/bob",
+            headers=alice_headers,
+        )
+        self.assertEqual(alice_response.status_code, 200)
+        alice_message = alice_response.get_json()["messages"][0]
+        self.assertEqual(alice_message["message"], "enc-for-alice")
+        self.assertEqual(alice_message["encrypted_key"], "alice-key")
+
+        bob_response = self.client.get(
+            "/api/messages/history/private/alice",
+            headers=bob_headers,
+        )
+        self.assertEqual(bob_response.status_code, 200)
+        bob_message = bob_response.get_json()["messages"][0]
+        self.assertEqual(bob_message["message"], "enc-for-bob")
+        self.assertEqual(bob_message["encrypted_key"], "bob-key")
+
+    def test_group_history_returns_recipient_scoped_encrypted_keys(self):
+        self._register("alice")
+        self._register("bob")
+        alice_headers = self._auth_header("alice")
+        bob_headers = self._auth_header("bob")
+
+        with self.app.app_context():
+            from app.models.group_model import Group, GroupMember
+            from app.models.user_model import User
+            from app.repositories import message_repository
+
+            alice = User.query.filter_by(username="alice").first()
+            bob = User.query.filter_by(username="bob").first()
+            self.assertIsNotNone(alice)
+            self.assertIsNotNone(bob)
+
+            group = Group(name="history-group", creator_id=alice.id)
+            self.db.session.add(group)
+            self.db.session.flush()
+            self.db.session.add(GroupMember(group_id=group.id, user_id=alice.id))
+            self.db.session.add(GroupMember(group_id=group.id, user_id=bob.id))
+            self.db.session.commit()
+            group_id = group.id
+
+            payload = message_repository.build_group_message_payload(
+                sender="alice",
+                group_id=group_id,
+                encrypted_message="enc-group-history",
+                encrypted_keys={
+                    "alice": "alice-history-key",
+                    "bob": "bob-history-key",
+                },
+            )
+            message_repository.store_group_message_metadata(payload, group_id)
+
+        bob_response = self.client.get(
+            f"/api/messages/history/group/{group_id}",
+            headers=bob_headers,
+        )
+        self.assertEqual(bob_response.status_code, 200)
+        bob_message = bob_response.get_json()["messages"][0]
+        self.assertEqual(bob_message["encrypted_keys"], {"bob": "bob-history-key"})
+        self.assertEqual(bob_message["encrypted_key"], "bob-history-key")
+
+        alice_response = self.client.get(
+            f"/api/messages/history/group/{group_id}",
+            headers=alice_headers,
+        )
+        self.assertEqual(alice_response.status_code, 200)
+        alice_message = alice_response.get_json()["messages"][0]
+        self.assertEqual(alice_message["encrypted_keys"], {"alice": "alice-history-key"})
+        self.assertEqual(alice_message["encrypted_key"], "alice-history-key")
+
+    def test_group_history_excludes_messages_before_member_join(self):
+        self._register("alice")
+        self._register("bob")
+        self._register("charlie")
+        charlie_headers = self._auth_header("charlie")
+
+        with self.app.app_context():
+            from app.models.group_model import Group, GroupMember
+            from app.models.user_model import User
+            from app.repositories import message_repository
+
+            alice = User.query.filter_by(username="alice").first()
+            bob = User.query.filter_by(username="bob").first()
+            charlie = User.query.filter_by(username="charlie").first()
+            self.assertIsNotNone(alice)
+            self.assertIsNotNone(bob)
+            self.assertIsNotNone(charlie)
+
+            group = Group(name="join-cutoff-group", creator_id=alice.id)
+            self.db.session.add(group)
+            self.db.session.flush()
+            self.db.session.add(GroupMember(group_id=group.id, user_id=alice.id))
+            self.db.session.add(GroupMember(group_id=group.id, user_id=bob.id))
+            self.db.session.commit()
+            group_id = group.id
+
+            old_payload = message_repository.build_group_message_payload(
+                sender="alice",
+                group_id=group_id,
+                encrypted_message="enc-before-charlie",
+                encrypted_keys={
+                    "alice": "alice-before-key",
+                    "bob": "bob-before-key",
+                },
+            )
+            message_repository.store_group_message_metadata(old_payload, group_id)
+
+            self.db.session.add(GroupMember(group_id=group_id, user_id=charlie.id))
+            self.db.session.commit()
+
+            new_payload = message_repository.build_group_message_payload(
+                sender="alice",
+                group_id=group_id,
+                encrypted_message="enc-after-charlie",
+                encrypted_keys={
+                    "alice": "alice-after-key",
+                    "bob": "bob-after-key",
+                    "charlie": "charlie-after-key",
+                },
+            )
+            message_repository.store_group_message_metadata(new_payload, group_id)
+
+        history_response = self.client.get(
+            f"/api/messages/history/group/{group_id}",
+            headers=charlie_headers,
+        )
+        self.assertEqual(history_response.status_code, 200)
+        history_payload = history_response.get_json()
+        self.assertEqual(len(history_payload["messages"]), 1)
+        self.assertEqual(
+            history_payload["messages"][0]["message_id"],
+            new_payload["message_id"],
+        )
+
+    def test_group_history_skips_non_decryptable_messages_for_member(self):
+        self._register("alice")
+        self._register("bob")
+        bob_headers = self._auth_header("bob")
+
+        with self.app.app_context():
+            from app.models.group_model import Group, GroupMember
+            from app.models.user_model import User
+            from app.repositories import message_repository
+
+            alice = User.query.filter_by(username="alice").first()
+            bob = User.query.filter_by(username="bob").first()
+            self.assertIsNotNone(alice)
+            self.assertIsNotNone(bob)
+
+            group = Group(name="missing-keys-group", creator_id=alice.id)
+            self.db.session.add(group)
+            self.db.session.flush()
+            self.db.session.add(GroupMember(group_id=group.id, user_id=alice.id))
+            self.db.session.add(GroupMember(group_id=group.id, user_id=bob.id))
+            self.db.session.commit()
+            group_id = group.id
+
+            payload = message_repository.build_group_message_payload(
+                sender="alice",
+                group_id=group_id,
+                encrypted_message="enc-without-bob-key",
+                encrypted_keys={
+                    "alice": "alice-only-key",
+                },
+            )
+            message_repository.store_group_message_metadata(payload, group_id)
+
+        history_response = self.client.get(
+            f"/api/messages/history/group/{group_id}",
+            headers=bob_headers,
+        )
+        self.assertEqual(history_response.status_code, 200)
+        history_payload = history_response.get_json()
+        self.assertEqual(history_payload["messages"], [])
 
     def test_create_post_and_list_posts_with_limit_cap(self):
         self._register("alice")
@@ -1868,6 +2093,122 @@ class TestApiRoutes(unittest.TestCase):
         self.assertEqual(group_payload["creator"]["username"], "alice")
         self.assertEqual(group_payload["member_count"], 2)
 
+    def test_contacts_delta_returns_only_requested_incremental_contacts(self):
+        self._register("alice")
+        self._register("bob")
+        self._register("charlie")
+        alice_headers = self._auth_header("alice")
+
+        self.assertEqual(
+            self.client.post("/api/follows/bob", headers=alice_headers).status_code,
+            200,
+        )
+
+        with self.app.app_context():
+            from app.services import message_service
+
+            message_service.send_message(
+                sender="charlie",
+                recipient="alice",
+                message="enc-delta",
+                encrypted_key="key-delta",
+            )
+
+        delta_response = self.client.get(
+            "/api/contacts/delta",
+            query_string={"users": "bob,charlie,unknown"},
+            headers=alice_headers,
+        )
+        self.assertEqual(delta_response.status_code, 200)
+        payload = delta_response.get_json()
+        contacts = payload.get("contacts", [])
+        contact_usernames = {contact["username"] for contact in contacts}
+
+        self.assertIn("bob", contact_usernames)
+        self.assertIn("charlie", contact_usernames)
+        self.assertNotIn("unknown", contact_usernames)
+
+        by_username = {contact["username"]: contact for contact in contacts}
+        self.assertFalse(by_username["bob"]["has_message"])
+        self.assertTrue(by_username["charlie"]["has_message"])
+        self.assertIsNotNone(by_username["charlie"]["last_message"])
+
+    def test_detailed_contacts_uses_batched_timestamp_and_online_lookups(self):
+        self._register("alice")
+        self._register("bob")
+        self._register("charlie")
+        alice_headers = self._auth_header("alice")
+
+        self.assertEqual(
+            self.client.post("/api/follows/bob", headers=alice_headers).status_code,
+            200,
+        )
+        self.assertEqual(
+            self.client.post("/api/follows/charlie", headers=alice_headers).status_code,
+            200,
+        )
+
+        from app.services import contact_service
+
+        with patch.object(
+            contact_service.message_repository,
+            "get_contact_timestamp_score",
+            side_effect=AssertionError("per-contact timestamp lookup should not be used"),
+        ):
+            with patch.object(
+                contact_service.message_repository,
+                "get_contact_timestamp_scores",
+                wraps=contact_service.message_repository.get_contact_timestamp_scores,
+            ) as batched_scores:
+                with patch.object(
+                    contact_service,
+                    "get_users_online_status",
+                    return_value={"bob": False, "charlie": False},
+                ) as batched_online_status:
+                    response = self.client.get(
+                        "/api/contacts?detailed=true",
+                        headers=alice_headers,
+                    )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        usernames = {item["username"] for item in payload.get("contacts", [])}
+        self.assertSetEqual(usernames, {"bob", "charlie"})
+        self.assertGreaterEqual(batched_scores.call_count, 1)
+        batched_online_status.assert_called_once()
+
+    def test_contacts_delta_uses_batched_timestamp_lookup(self):
+        self._register("alice")
+        self._register("bob")
+        self._register("charlie")
+        alice_headers = self._auth_header("alice")
+
+        self.assertEqual(
+            self.client.post("/api/follows/bob", headers=alice_headers).status_code,
+            200,
+        )
+
+        from app.services import contact_service
+
+        with patch.object(
+            contact_service.message_repository,
+            "get_contact_timestamp_score",
+            side_effect=AssertionError("per-contact timestamp lookup should not be used"),
+        ):
+            with patch.object(
+                contact_service.message_repository,
+                "get_contact_timestamp_scores",
+                wraps=contact_service.message_repository.get_contact_timestamp_scores,
+            ) as batched_scores:
+                response = self.client.get(
+                    "/api/contacts/delta",
+                    query_string={"users": "bob,charlie,missing"},
+                    headers=alice_headers,
+                )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertGreaterEqual(batched_scores.call_count, 1)
+
     def test_public_key_access_allowed_for_existing_conversation(self):
         self._register("alice", public_key="alice_key")
         self._register("charlie", public_key="charlie_key")
@@ -2935,6 +3276,146 @@ class TestApiRoutes(unittest.TestCase):
 
             self.assertEqual(CrashLog.query.count(), 1)
 
+    def test_admin_crash_list_groups_duplicates_and_sorts_by_occurrence_count(self):
+        self._register("admin")
+        self._register("alice")
+        self._register("bob")
+        self._make_admin("admin")
+        admin_headers = self._auth_header("admin")
+        alice_headers = self._auth_header("alice")
+        bob_headers = self._auth_header("bob")
+
+        hot_crash_stack = (
+            "java.lang.IllegalStateException: boom\n"
+            "    at a.b.c(Unknown Source:10)\n"
+            "    at a.b.d(Unknown Source:22)"
+        )
+        cold_crash_stack = (
+            "java.lang.RuntimeException: oops\n"
+            "    at x.y.z(Unknown Source:15)"
+        )
+
+        first_hot = self.client.post(
+            "/api/crash-logs",
+            headers=alice_headers,
+            json={
+                "event_id": "hot-crash-1",
+                "app_version": "0.8.4beta",
+                "exception_type": "java.lang.IllegalStateException",
+                "stack_trace": hot_crash_stack,
+            },
+        )
+        second_hot = self.client.post(
+            "/api/crash-logs",
+            headers=bob_headers,
+            json={
+                "event_id": "hot-crash-2",
+                "app_version": "0.8.4beta",
+                "exception_type": "java.lang.IllegalStateException",
+                "stack_trace": hot_crash_stack.replace(":10)", ":99)"),
+            },
+        )
+        cold = self.client.post(
+            "/api/crash-logs",
+            headers=alice_headers,
+            json={
+                "event_id": "cold-crash-1",
+                "app_version": "0.8.4beta",
+                "exception_type": "java.lang.RuntimeException",
+                "stack_trace": cold_crash_stack,
+            },
+        )
+
+        self.assertEqual(first_hot.status_code, 201)
+        self.assertEqual(second_hot.status_code, 200)
+        self.assertFalse(second_hot.get_json()["created"])
+        self.assertEqual(cold.status_code, 201)
+
+        list_response = self.client.get(
+            "/admin/api/crash-logs?page=1&limit=20",
+            headers=admin_headers,
+        )
+        self.assertEqual(list_response.status_code, 200)
+        payload = list_response.get_json()
+        self.assertEqual(payload["total"], 2)
+        self.assertEqual(payload["crash_logs"][0]["occurrence_count"], 2)
+        self.assertEqual(payload["crash_logs"][1]["occurrence_count"], 1)
+        self.assertIn("alice", payload["crash_logs"][0]["affected_users"])
+        self.assertIn("bob", payload["crash_logs"][0]["affected_users"])
+
+    def test_admin_can_resolve_crash_group_and_skip_future_duplicates(self):
+        self._register("admin")
+        self._register("alice")
+        self._make_admin("admin")
+        admin_headers = self._auth_header("admin")
+        alice_headers = self._auth_header("alice")
+
+        payload_1 = {
+            "event_id": "resolved-group-1",
+            "app_version": "0.8.4beta",
+            "exception_type": "java.lang.IllegalStateException",
+            "stack_trace": (
+                "java.lang.IllegalStateException: boom\n"
+                "    at a.b.c(Unknown Source:12)\n"
+                "    at a.b.d(Unknown Source:35)"
+            ),
+        }
+        payload_2 = {
+            "event_id": "resolved-group-2",
+            "app_version": "0.8.4beta",
+            "exception_type": "java.lang.IllegalStateException",
+            "stack_trace": (
+                "java.lang.IllegalStateException: boom\n"
+                "    at a.b.c(Unknown Source:44)\n"
+                "    at a.b.d(Unknown Source:90)"
+            ),
+        }
+
+        first = self.client.post("/api/crash-logs", headers=alice_headers, json=payload_1)
+        second = self.client.post("/api/crash-logs", headers=alice_headers, json=payload_2)
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 200)
+        self.assertFalse(second.get_json()["created"])
+        self.assertEqual(
+            second.get_json()["crash_log_id"],
+            first.get_json()["crash_log_id"],
+        )
+
+        crash_log_id = first.get_json()["crash_log_id"]
+        resolve_response = self.client.post(
+            f"/admin/api/crash-logs/{crash_log_id}/resolve",
+            headers=admin_headers,
+        )
+        self.assertEqual(resolve_response.status_code, 200)
+        resolve_payload = resolve_response.get_json()
+        self.assertGreaterEqual(resolve_payload["deleted_count"], 1)
+
+        with self.app.app_context():
+            from app.models.crash_log_model import CrashLog
+
+            self.assertEqual(CrashLog.query.count(), 0)
+
+        third = self.client.post(
+            "/api/crash-logs",
+            headers=alice_headers,
+            json={
+                "event_id": "resolved-group-3",
+                "app_version": "0.8.4beta",
+                "exception_type": "java.lang.IllegalStateException",
+                "stack_trace": payload_1["stack_trace"],
+            },
+        )
+        self.assertEqual(third.status_code, 200)
+        third_payload = third.get_json()
+        self.assertFalse(third_payload["created"])
+        self.assertTrue(third_payload["ignored_resolved"])
+        self.assertIsNone(third_payload["crash_log_id"])
+
+        with self.app.app_context():
+            from app.models.crash_log_model import CrashLog
+
+            self.assertEqual(CrashLog.query.count(), 0)
+
 
     def test_message_attachment_upload_success(self):
         self._register("alice")
@@ -2974,6 +3455,159 @@ class TestApiRoutes(unittest.TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn("Unsupported attachment type", response.get_json()["error"])
+
+    def test_message_attachment_upload_accepts_mime_with_parameters(self):
+        self._register("alice")
+        headers = self._auth_header("alice")
+
+        class FakeMinio:
+            def bucket_exists(self, *args, **kwargs):
+                return True
+
+            def put_object(self, **kwargs):
+                return None
+
+        with patch("app.services.message_service.get_minio_client", return_value=FakeMinio()):
+            response = self.client.post(
+                "/api/messages/attachments",
+                data={"file": (io.BytesIO(b"fake-image"), "chat.webp", "image/webp; charset=binary")},
+                headers=headers,
+                content_type="multipart/form-data",
+            )
+
+        self.assertEqual(response.status_code, 201)
+        body = response.get_json()["attachment"]
+        self.assertEqual(body["mime_type"], "image/webp")
+
+    def test_message_attachment_upload_unknown_length_stream_is_spooled_and_uploaded(self):
+        self._register("alice")
+
+        class NonSeekableBytesIO(io.BytesIO):
+            def seek(self, *args, **kwargs):
+                raise OSError("seek is not supported")
+
+        class FakeFileStorage:
+            def __init__(self, payload: bytes):
+                self.filename = "voice.webm"
+                self.mimetype = "audio/webm"
+                self.stream = NonSeekableBytesIO(payload)
+
+        class FakeMinio:
+            def bucket_exists(self, *args, **kwargs):
+                return True
+
+            def put_object(self, **kwargs):
+                captured["length"] = kwargs["length"]
+                captured["content_type"] = kwargs["content_type"]
+                captured["rolled_to_disk"] = bool(getattr(kwargs["data"], "_rolled", False))
+                kwargs["data"].read()
+                return None
+
+        payload = b"voice-bytes" * 262_144  # ~2.75MB
+        captured = {}
+        with self.app.app_context(), patch(
+            "app.services.message_service.get_minio_client",
+            return_value=FakeMinio(),
+        ):
+            result = self.message_service.upload_message_attachment(
+                "alice",
+                FakeFileStorage(payload),
+            )
+
+        self.assertEqual(captured["length"], len(payload))
+        self.assertEqual(captured["content_type"], "audio/webm")
+        self.assertTrue(captured["rolled_to_disk"])
+        self.assertEqual(result["size_bytes"], len(payload))
+        self.assertEqual(result["mime_type"], "audio/webm")
+        self.assertEqual(result["type"], "voice")
+
+    def test_message_attachment_upload_known_length_accepts_exact_image_limit(self):
+        self._register("alice")
+
+        class FakeMinio:
+            def bucket_exists(self, *args, **kwargs):
+                return True
+
+            def put_object(self, **kwargs):
+                return None
+
+        payload = b"a" * self.message_service.MAX_IMAGE_SIZE_BYTES
+        with self.app.app_context(), patch(
+            "app.services.message_service.get_minio_client",
+            return_value=FakeMinio(),
+        ):
+            result = self.message_service.upload_message_attachment(
+                username="alice",
+                file_storage=type(
+                    "FakeFileStorage",
+                    (),
+                    {
+                        "filename": "limit.webp",
+                        "mimetype": "image/webp",
+                        "stream": io.BytesIO(payload),
+                    },
+                )(),
+            )
+
+        self.assertEqual(result["size_bytes"], self.message_service.MAX_IMAGE_SIZE_BYTES)
+        self.assertEqual(result["mime_type"], "image/webp")
+
+    def test_message_attachment_upload_unknown_length_stream_respects_size_limit(self):
+        self._register("alice")
+
+        class NonSeekableGeneratedStream:
+            def __init__(self, total_size: int):
+                self.remaining = total_size
+
+            def read(self, size: int = -1):
+                if self.remaining <= 0:
+                    return b""
+                if size is None or size < 0:
+                    size = self.remaining
+                chunk_size = min(size, self.remaining, 256 * 1024)
+                self.remaining -= chunk_size
+                return b"x" * chunk_size
+
+            def seek(self, *args, **kwargs):
+                raise OSError("seek is not supported")
+
+        class FakeFileStorage:
+            filename = "oversized.webp"
+            mimetype = "image/webp"
+
+            def __init__(self, total_size: int):
+                self.stream = NonSeekableGeneratedStream(total_size)
+
+        oversized_bytes = self.message_service.MAX_IMAGE_SIZE_BYTES + 1
+        with self.app.app_context():
+            with self.assertRaises(ValueError) as raised:
+                self.message_service.upload_message_attachment(
+                    "alice",
+                    FakeFileStorage(oversized_bytes),
+                )
+
+        self.assertIn("Image too large", str(raised.exception))
+
+    def test_message_attachment_upload_known_length_rejects_oversized_image(self):
+        self._register("alice")
+        oversized_payload = b"x" * (self.message_service.MAX_IMAGE_SIZE_BYTES + 1)
+
+        with self.app.app_context():
+            with self.assertRaises(ValueError) as raised:
+                self.message_service.upload_message_attachment(
+                    username="alice",
+                    file_storage=type(
+                        "FakeFileStorage",
+                        (),
+                        {
+                            "filename": "too-large.webp",
+                            "mimetype": "image/webp",
+                            "stream": io.BytesIO(oversized_payload),
+                        },
+                    )(),
+                )
+
+        self.assertIn("Image too large", str(raised.exception))
 
     def test_messages_routes_inbox_and_send_deprecated(self):
         self._register("alice")

@@ -9,7 +9,7 @@ from app.services.group_service import (
     NotGroupCreatorError,
 )
 from app.services import message_service
-from app.extensions.extensions import socketio
+from app.socket_events import emit_group_event_to_members, evict_user_from_group_room
 
 group_bp = Blueprint("groups", __name__)
 
@@ -114,13 +114,13 @@ def add_member(group_id):
         )
 
         for added_username in result["added"]:
-            socketio.emit(
-                "group_member_key_updated",
-                {
+            emit_group_event_to_members(
+                group_id=group_id,
+                event_name="group_member_key_updated",
+                payload={
                     "username": added_username,
                     "group_id": group_id,
                 },
-                room=f"group_{group_id}",
             )
 
         if single_target_username and single_target_username in result["already_members"]:
@@ -153,8 +153,36 @@ def add_member(group_id):
 @jwt_required()
 def remove_member(group_id, target_username):
     username = get_jwt_identity()
+    normalized_target = (target_username or "").strip()
     try:
-        group_service.remove_member_from_group(username, group_id, target_username)
+        group_service.remove_member_from_group(username, group_id, normalized_target)
+
+        removal_reason = "left" if username == normalized_target else "removed"
+        message_service.purge_group_delivery_for_user(group_id, normalized_target)
+        evict_user_from_group_room(
+            normalized_target,
+            group_id,
+            reason=removal_reason,
+            notify=True,
+        )
+        emit_group_event_to_members(
+            group_id=group_id,
+            event_name="group_member_removed",
+            payload={
+                "group_id": group_id,
+                "username": normalized_target,
+                "removed_by": username,
+                "reason": removal_reason,
+            },
+        )
+        emit_group_event_to_members(
+            group_id=group_id,
+            event_name="group_member_key_updated",
+            payload={
+                "username": normalized_target,
+                "group_id": group_id,
+            },
+        )
         return jsonify({"message": "Member removed"}), 200
     except NotGroupCreatorError as exc:
         return jsonify({"error": str(exc)}), 403
@@ -168,6 +196,31 @@ def leave_group(group_id):
     username = get_jwt_identity()
     try:
         group_service.remove_member_from_group(username, group_id, username)
+        message_service.purge_group_delivery_for_user(group_id, username)
+        evict_user_from_group_room(
+            username,
+            group_id,
+            reason="left",
+            notify=True,
+        )
+        emit_group_event_to_members(
+            group_id=group_id,
+            event_name="group_member_removed",
+            payload={
+                "group_id": group_id,
+                "username": username,
+                "removed_by": username,
+                "reason": "left",
+            },
+        )
+        emit_group_event_to_members(
+            group_id=group_id,
+            event_name="group_member_key_updated",
+            payload={
+                "username": username,
+                "group_id": group_id,
+            },
+        )
         return jsonify({"message": "You have left the group"}), 200
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
@@ -178,7 +231,18 @@ def leave_group(group_id):
 def delete_group(group_id):
     username = get_jwt_identity()
     try:
+        from app.repositories import group_repository
+
+        member_usernames = group_repository.get_group_member_usernames(group_id)
         group_service.delete_group(username, group_id)
+        for member_username in member_usernames:
+            message_service.purge_group_delivery_for_user(group_id, member_username)
+            evict_user_from_group_room(
+                member_username,
+                group_id,
+                reason="group_deleted",
+                notify=True,
+            )
         return jsonify({"message": "Group deleted"}), 200
     except NotGroupCreatorError as exc:
         return jsonify({"error": str(exc)}), 403
@@ -203,7 +267,11 @@ def upload_group_attachment(group_id):
     file = request.files.get("file") or request.files.get("attachment")
 
     try:
-        payload = message_service.upload_message_attachment(username, file)
+        payload = message_service.upload_message_attachment(
+            username=username,
+            file_storage=file,
+            upload_scope="group",
+        )
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     except message_service.MessageAttachmentStorageError as exc:

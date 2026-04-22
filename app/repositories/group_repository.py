@@ -2,9 +2,31 @@ from sqlalchemy import func
 from sqlalchemy.orm import aliased, joinedload
 
 from app.db import db
+from app.extensions.redis_client import redis_client
 from app.models.group_model import Group, GroupMember
 from app.models.user_model import User
 from app.models.profile_model import Profile
+
+GROUP_MEMBERSHIP_VERSION_HASH = "group:membership_versions"
+
+
+def _normalize_group_id(group_id):
+    try:
+        normalized_group_id = int(group_id)
+    except (TypeError, ValueError):
+        return None
+    return normalized_group_id if normalized_group_id > 0 else None
+
+
+def _decode_redis_int(value, default=0):
+    if value is None:
+        return default
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="ignore")
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def count_groups_created_by(user_id: int) -> int:
@@ -51,6 +73,71 @@ def is_member(group_id: int, user_id: int) -> bool:
         ).first()
         is not None
     )
+
+
+def is_username_member(group_id: int, username: str) -> bool:
+    normalized_group_id = _normalize_group_id(group_id)
+    normalized_username = (username or "").strip()
+    if not normalized_group_id or not normalized_username:
+        return False
+
+    return (
+        db.session.query(GroupMember.id)
+        .join(User, User.id == GroupMember.user_id)
+        .filter(
+            GroupMember.group_id == normalized_group_id,
+            User.username == normalized_username,
+        )
+        .first()
+        is not None
+    )
+
+
+def get_membership_version(group_id: int) -> int:
+    normalized_group_id = _normalize_group_id(group_id)
+    if not normalized_group_id:
+        return 0
+
+    try:
+        raw_value = redis_client.hget(
+            GROUP_MEMBERSHIP_VERSION_HASH,
+            str(normalized_group_id),
+        )
+    except Exception:
+        return 0
+
+    return _decode_redis_int(raw_value, default=0)
+
+
+def bump_membership_version(group_id: int) -> int:
+    normalized_group_id = _normalize_group_id(group_id)
+    if not normalized_group_id:
+        return 0
+
+    try:
+        return int(
+            redis_client.hincrby(
+                GROUP_MEMBERSHIP_VERSION_HASH,
+                str(normalized_group_id),
+                1,
+            )
+        )
+    except Exception:
+        return get_membership_version(normalized_group_id)
+
+
+def clear_membership_version(group_id: int) -> None:
+    normalized_group_id = _normalize_group_id(group_id)
+    if not normalized_group_id:
+        return
+
+    try:
+        redis_client.hdel(
+            GROUP_MEMBERSHIP_VERSION_HASH,
+            str(normalized_group_id),
+        )
+    except Exception:
+        return
 
 
 def get_group_by_id(group_id: int) -> Group | None:

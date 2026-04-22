@@ -3,6 +3,7 @@ from flask_jwt_extended import jwt_required, get_jwt_identity
 
 from app.services import auth_service
 from app.extensions.extensions import socketio
+from app.socket_events import emit_group_event_to_members
 
 
 
@@ -128,13 +129,13 @@ def rotate_public_key():
         socketio.emit("user_public_key_updated", event_payload, room=recipient)
 
     for group_id in result["group_ids"]:
-        socketio.emit(
-            "group_member_key_updated",
-            {
+        emit_group_event_to_members(
+            group_id=group_id,
+            event_name="group_member_key_updated",
+            payload={
                 "username": result["username"],
                 "group_id": group_id,
             },
-            room=f"group_{group_id}",
         )
 
     return jsonify({"message": "Public key updated"}), 200

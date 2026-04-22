@@ -37,6 +37,7 @@ from app.services import async_task_service, report_service
 import app.models.activity_notification_model  # noqa: F401 – register model with SQLAlchemy
 import app.models.app_update_model  # noqa: F401 – register model with SQLAlchemy
 import app.models.block_model  # noqa: F401 – register model with SQLAlchemy
+import app.models.chat_message_model  # noqa: F401 – register model with SQLAlchemy
 import app.models.crash_log_model  # noqa: F401 – register model with SQLAlchemy
 import app.models.group_model  # noqa: F401 – register model with SQLAlchemy
 import app.models.pending_registration_model  # noqa: F401 – register model with SQLAlchemy
@@ -196,6 +197,247 @@ def _ensure_app_update_schema():
     db.session.commit()
 
 
+def _ensure_private_message_sender_cipher_schema():
+    inspector = inspect(db.engine)
+    if not inspector.has_table("private_messages"):
+        return
+
+    column_names = {
+        column["name"]
+        for column in inspector.get_columns("private_messages")
+    }
+    migration_sql = []
+    if "sender_encrypted_message" not in column_names:
+        migration_sql.append(
+            "ALTER TABLE private_messages "
+            "ADD COLUMN sender_encrypted_message TEXT"
+        )
+    if "sender_encrypted_key" not in column_names:
+        migration_sql.append(
+            "ALTER TABLE private_messages "
+            "ADD COLUMN sender_encrypted_key TEXT"
+        )
+
+    if migration_sql:
+        for sql in migration_sql:
+            db.session.execute(text(sql))
+        db.session.commit()
+
+
+def _ensure_message_idempotency_schema():
+    inspector = inspect(db.engine)
+
+    if inspector.has_table("private_messages"):
+        private_columns = {
+            column["name"]
+            for column in inspector.get_columns("private_messages")
+        }
+        if "client_message_id" not in private_columns:
+            db.session.execute(
+                text(
+                    "ALTER TABLE private_messages "
+                    "ADD COLUMN client_message_id VARCHAR(128)"
+                )
+            )
+
+        db.session.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "ux_private_messages_sender_recipient_client_message_id "
+                "ON private_messages (sender_username, recipient_username, client_message_id)"
+            )
+        )
+
+    if inspector.has_table("group_messages"):
+        group_columns = {
+            column["name"]
+            for column in inspector.get_columns("group_messages")
+        }
+        if "client_message_id" not in group_columns:
+            db.session.execute(
+                text(
+                    "ALTER TABLE group_messages "
+                    "ADD COLUMN client_message_id VARCHAR(128)"
+                )
+            )
+
+        db.session.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "ux_group_messages_sender_group_client_message_id "
+                "ON group_messages (sender_username, group_id, client_message_id)"
+            )
+        )
+
+    db.session.commit()
+
+
+def _ensure_group_recipient_seen_schema():
+    inspector = inspect(db.engine)
+    if not inspector.has_table("group_message_recipients"):
+        return
+
+    column_names = {
+        column["name"]
+        for column in inspector.get_columns("group_message_recipients")
+    }
+
+    migration_sql = []
+    if "seen_at" not in column_names:
+        migration_sql.append(
+            "ALTER TABLE group_message_recipients "
+            "ADD COLUMN seen_at DATETIME"
+        )
+
+    for sql in migration_sql:
+        db.session.execute(text(sql))
+
+    db.session.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_group_message_recipient_seen "
+            "ON group_message_recipients (recipient_username, group_id, seen_at)"
+        )
+    )
+    db.session.commit()
+
+
+def _ensure_group_key_fanout_schema():
+    inspector = inspect(db.engine)
+    if not inspector.has_table("group_messages"):
+        return
+
+    group_message_columns = {
+        column["name"]
+        for column in inspector.get_columns("group_messages")
+    }
+    if "group_key_ref" not in group_message_columns:
+        db.session.execute(
+            text(
+                "ALTER TABLE group_messages "
+                "ADD COLUMN group_key_ref VARCHAR(128)"
+            )
+        )
+    if "sender_encrypted_key" not in group_message_columns:
+        db.session.execute(
+            text(
+                "ALTER TABLE group_messages "
+                "ADD COLUMN sender_encrypted_key TEXT"
+            )
+        )
+
+    db.session.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_group_messages_group_key_ref "
+            "ON group_messages (group_key_ref)"
+        )
+    )
+
+    if inspector.has_table("group_message_recipients"):
+        recipient_columns = {
+            column["name"]
+            for column in inspector.get_columns("group_message_recipients")
+        }
+        if "encrypted_key" not in recipient_columns:
+            db.session.execute(
+                text(
+                    "ALTER TABLE group_message_recipients "
+                    "ADD COLUMN encrypted_key TEXT"
+                )
+            )
+
+    db.session.execute(
+        text(
+            "CREATE TABLE IF NOT EXISTS group_message_key_recipients ("
+            "id INTEGER PRIMARY KEY, "
+            "group_id INTEGER NOT NULL, "
+            "sender_username VARCHAR(80) NOT NULL, "
+            "group_key_ref VARCHAR(128) NOT NULL, "
+            "recipient_username VARCHAR(80) NOT NULL, "
+            "encrypted_key TEXT NOT NULL, "
+            "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP"
+            ")"
+        )
+    )
+    db.session.execute(
+        text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_group_message_key_recipient "
+            "ON group_message_key_recipients ("
+            "group_id, sender_username, group_key_ref, recipient_username)"
+        )
+    )
+    db.session.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_group_message_key_lookup "
+            "ON group_message_key_recipients (group_id, sender_username, group_key_ref)"
+        )
+    )
+    db.session.commit()
+
+
+def _ensure_crash_log_schema():
+    inspector = inspect(db.engine)
+    if not inspector.has_table("crash_logs"):
+        return
+
+    column_names = {
+        column["name"]
+        for column in inspector.get_columns("crash_logs")
+    }
+    if "crash_signature" not in column_names:
+        db.session.execute(
+            text(
+                "ALTER TABLE crash_logs "
+                "ADD COLUMN crash_signature VARCHAR(64)"
+            )
+        )
+    if "occurrence_count" not in column_names:
+        db.session.execute(
+            text(
+                "ALTER TABLE crash_logs "
+                "ADD COLUMN occurrence_count INTEGER NOT NULL DEFAULT 1"
+            )
+        )
+    if "affected_users_json" not in column_names:
+        db.session.execute(
+            text(
+                "ALTER TABLE crash_logs "
+                "ADD COLUMN affected_users_json TEXT"
+            )
+        )
+
+    db.session.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_crash_logs_crash_signature "
+            "ON crash_logs (crash_signature)"
+        )
+    )
+    db.session.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_crash_logs_occurrence_count "
+            "ON crash_logs (occurrence_count)"
+        )
+    )
+    db.session.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_resolved_crash_signatures_signature "
+            "ON resolved_crash_signatures (signature)"
+        )
+    )
+    db.session.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_crash_event_ids_event_id "
+            "ON crash_event_ids (event_id)"
+        )
+    )
+    db.session.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_crash_event_ids_crash_log_id "
+            "ON crash_event_ids (crash_log_id)"
+        )
+    )
+    db.session.commit()
+
+
 def _warn_on_database_fallback(app: Flask):
     if Config.DATABASE_URL_WAS_EXPLICIT:
         return
@@ -206,14 +448,30 @@ def _warn_on_database_fallback(app: Flask):
 
 
 def _log_async_task_mode(app: Flask):
+    app_env = str(app.config.get("APP_ENV", "development")).strip().lower()
+    inline_fallback = bool(app.config.get("ASYNC_TASK_INLINE_FALLBACK", True))
+    min_workers = int(app.config.get("ASYNC_TASK_MIN_WORKER_COUNT", 1) or 1)
+
     if app.config.get("ASYNC_TASKS_ENABLED", False):
         app.logger.info(
-            "Async task queue enabled (queue=%s). "
+            "Async task queue enabled (queue=%s app_env=%s inline_fallback=%s min_workers=%s). "
             "Run `python run_async_worker.py` in production.",
             app.config.get("ASYNC_TASK_QUEUE_NAME"),
+            app_env,
+            inline_fallback,
+            min_workers,
         )
+        if app_env in {"prod", "production"} and inline_fallback:
+            app.logger.warning(
+                "APP_ENV=%s with ASYNC_TASK_INLINE_FALLBACK=true. "
+                "Group message side effects still require worker-backed enqueue and will not fallback inline.",
+                app_env,
+            )
         return
-    app.logger.info("Async task queue disabled; side effects run inline.")
+    app.logger.info(
+        "Async task queue disabled (app_env=%s); side effects run inline where enabled.",
+        app_env,
+    )
 
 
 def _start_moderation_cleanup_worker(app: Flask):
@@ -285,6 +543,18 @@ def create_app():
     app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024  # 100 MB hard cap
     _warn_on_database_fallback(app)
     _log_async_task_mode(app)
+    if app.config.get("ASYNC_TASK_SKIP_STARTUP_WORKER_CHECK", False):
+        app.logger.info("Skipping async worker startup capacity check for this process.")
+    else:
+        with app.app_context():
+            workers_ok = async_task_service.verify_worker_capacity_for_startup(
+                source="create_app",
+            )
+        if not workers_ok:
+            raise RuntimeError(
+                "Async worker capacity check failed. "
+                "Start async workers or set ASYNC_TASK_WORKER_STARTUP_STRICT=false."
+            )
 
     db.init_app(app)
     ma.init_app(app)
@@ -299,7 +569,8 @@ def create_app():
         engineio_logger=Config.SOCKETIO_ENGINEIO_LOGGER,
     )
     jwt = JWTManager(app)
-    register_socket_events()
+    with app.app_context():
+        register_socket_events()
 
     app.register_blueprint(main_bp, url_prefix="/")
     app.register_blueprint(auth_bp, url_prefix="/api/auth")
@@ -327,6 +598,11 @@ def create_app():
         _ensure_media_schema()
         _ensure_performance_indexes()
         _ensure_app_update_schema()
+        _ensure_private_message_sender_cipher_schema()
+        _ensure_message_idempotency_schema()
+        _ensure_group_recipient_seen_schema()
+        _ensure_group_key_fanout_schema()
+        _ensure_crash_log_schema()
 
     if os.getenv("FLASK_RUN_FROM_CLI", "").strip().lower() in {"1", "true"}:
         app.logger.info("Using Flask CLI runtime. For production prefer Gunicorn.")

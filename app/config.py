@@ -107,6 +107,11 @@ def _resolve_socketio_cors_allowed_origins(default_origins, cors_origins):
 
 
 class Config:
+    APP_ENV = _env_str(
+        "APP_ENV",
+        _env_str("FLASK_ENV", "development"),
+    )
+
     DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
     SQLALCHEMY_DATABASE_URI = DATABASE_URL or "sqlite:///messenger.db"
     DATABASE_URL_WAS_EXPLICIT = bool(DATABASE_URL)
@@ -149,6 +154,9 @@ class Config:
 
     MESSAGE_ATTACHMENT_MAX_SIZE_BYTES = int(
         os.getenv("MESSAGE_ATTACHMENT_MAX_SIZE_BYTES", str(25 * 1024 * 1024))
+    )
+    MESSAGE_ATTACHMENT_SPOOL_MAX_MEMORY_BYTES = int(
+        os.getenv("MESSAGE_ATTACHMENT_SPOOL_MAX_MEMORY_BYTES", str(1024 * 1024))
     )
 
     # Credentialed CORS cannot use a wildcard origin.
@@ -193,10 +201,26 @@ class Config:
     SOCKET_PENDING_GROUP_BATCH_SIZE = int(
         os.getenv("SOCKET_PENDING_GROUP_BATCH_SIZE", "100")
     )
+    PRESENCE_CONNECTION_TTL_SECONDS = max(
+        15,
+        _env_int("PRESENCE_CONNECTION_TTL_SECONDS", 75),
+    )
+    PRESENCE_HEARTBEAT_INTERVAL_SECONDS = max(
+        5,
+        _env_int("PRESENCE_HEARTBEAT_INTERVAL_SECONDS", 20),
+    )
+    PRESENCE_CLEANUP_BATCH_SIZE = max(
+        10,
+        _env_int("PRESENCE_CLEANUP_BATCH_SIZE", 200),
+    )
 
     # Optional async task worker queue.
     ASYNC_TASKS_ENABLED = _env_bool("ASYNC_TASKS_ENABLED", False)
     ASYNC_TASK_QUEUE_NAME = _env_str("ASYNC_TASK_QUEUE_NAME", "sec_message:async_tasks")
+    ASYNC_TASK_RETRY_QUEUE_NAME = _env_str("ASYNC_TASK_RETRY_QUEUE_NAME", "")
+    ASYNC_TASK_FAILED_QUEUE_NAME = _env_str("ASYNC_TASK_FAILED_QUEUE_NAME", "")
+    ASYNC_TASK_METRICS_KEY = _env_str("ASYNC_TASK_METRICS_KEY", "")
+    ASYNC_TASK_WORKER_REGISTRY_KEY = _env_str("ASYNC_TASK_WORKER_REGISTRY_KEY", "")
     ASYNC_TASK_WORKER_BLOCK_TIMEOUT_SECONDS = max(
         1,
         _env_int("ASYNC_TASK_WORKER_BLOCK_TIMEOUT_SECONDS", 5),
@@ -205,7 +229,31 @@ class Config:
         0,
         _env_int("ASYNC_TASK_MAX_RETRIES", 2),
     )
+    ASYNC_TASK_RETRY_BACKOFF_BASE_SECONDS = max(
+        0.0,
+        _env_float("ASYNC_TASK_RETRY_BACKOFF_BASE_SECONDS", 1.0),
+    )
+    ASYNC_TASK_RETRY_BACKOFF_MAX_SECONDS = max(
+        0.1,
+        _env_float("ASYNC_TASK_RETRY_BACKOFF_MAX_SECONDS", 30.0),
+    )
     ASYNC_TASK_INLINE_FALLBACK = _env_bool("ASYNC_TASK_INLINE_FALLBACK", True)
+    ASYNC_TASK_MIN_WORKER_COUNT = max(
+        1,
+        _env_int("ASYNC_TASK_MIN_WORKER_COUNT", 1),
+    )
+    ASYNC_TASK_WORKER_HEARTBEAT_STALE_SECONDS = max(
+        5,
+        _env_int("ASYNC_TASK_WORKER_HEARTBEAT_STALE_SECONDS", 30),
+    )
+    ASYNC_TASK_WORKER_STARTUP_STRICT = _env_bool(
+        "ASYNC_TASK_WORKER_STARTUP_STRICT",
+        False,
+    )
+    ASYNC_TASK_SKIP_STARTUP_WORKER_CHECK = _env_bool(
+        "ASYNC_TASK_SKIP_STARTUP_WORKER_CHECK",
+        False,
+    )
     ASYNC_TASK_ENQUEUE_SOCKET_TIMEOUT_SECONDS = max(
         0.1,
         _env_float("ASYNC_TASK_ENQUEUE_SOCKET_TIMEOUT_SECONDS", 0.75),

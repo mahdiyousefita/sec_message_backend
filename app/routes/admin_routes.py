@@ -125,12 +125,14 @@ def admin_list_crash_logs():
     limit = min(50, max(1, request.args.get("limit", 20, type=int)))
     app_version = request.args.get("app_version")
     query = request.args.get("q")
+    exception_prefix = request.args.get("exception_prefix")
 
     payload = crash_log_service.list_crash_logs_for_admin(
         page=page,
         limit=limit,
         app_version=app_version,
         query=query,
+        exception_prefix=exception_prefix,
     )
     return jsonify(payload), 200
 
@@ -146,6 +148,24 @@ def admin_get_crash_log(crash_log_id):
             return jsonify({"error": message}), 404
         return jsonify({"error": message}), 400
     return jsonify({"crash_log": payload}), 200
+
+
+@admin_bp.route("/api/crash-logs/<int:crash_log_id>/resolve", methods=["POST"])
+@admin_required
+def admin_resolve_crash_log(crash_log_id):
+    admin_username = get_jwt_identity()
+    try:
+        payload = crash_log_service.resolve_crash_group_for_admin(
+            crash_log_id=crash_log_id,
+            admin_username=admin_username,
+        )
+    except ValueError as e:
+        message = str(e)
+        if message == "Crash log not found":
+            return jsonify({"error": message}), 404
+        return jsonify({"error": message}), 400
+
+    return jsonify({"message": "Crash group resolved", **payload}), 200
 
 
 @admin_bp.route("/api/crash-mappings", methods=["GET"])

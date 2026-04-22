@@ -181,6 +181,7 @@ def create_group(creator_username: str, group_name: str, member_usernames: list[
     for member_id in valid_member_ids:
         group_repository.add_member(group.id, member_id)
 
+    group_repository.bump_membership_version(group.id)
     return _format_group(group)
 
 
@@ -346,6 +347,9 @@ def add_members_to_group(requester_username: str, group_id: int, target_username
         else:
             already_member_usernames.append(target.username)
 
+    if added_usernames:
+        group_repository.bump_membership_version(group_id)
+
     return {
         "added": added_usernames,
         "already_members": already_member_usernames,
@@ -378,6 +382,7 @@ def remove_member_from_group(requester_username: str, group_id: int, target_user
         removed = group_repository.remove_member(group_id, requester.id)
         if not removed:
             raise ValueError("You are not a member of this group")
+        group_repository.bump_membership_version(group_id)
         return True
 
     if group.creator_id != requester.id:
@@ -386,6 +391,7 @@ def remove_member_from_group(requester_username: str, group_id: int, target_user
     removed = group_repository.remove_member(group_id, target.id)
     if not removed:
         raise ValueError("User is not a member of this group")
+    group_repository.bump_membership_version(group_id)
     return True
 
 
@@ -402,6 +408,7 @@ def delete_group(requester_username: str, group_id: int):
         raise NotGroupCreatorError("Only the group creator can delete the group")
 
     group_repository.delete_group(group_id)
+    group_repository.clear_membership_version(group_id)
     return True
 
 

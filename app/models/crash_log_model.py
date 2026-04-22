@@ -15,6 +15,9 @@ class CrashLog(db.Model):
     exception_type = db.Column(db.String(255), nullable=False)
     exception_message = db.Column(db.String(2048), nullable=True)
     stack_trace = db.Column(db.Text, nullable=False)
+    crash_signature = db.Column(db.String(64), nullable=True, index=True)
+    occurrence_count = db.Column(db.Integer, nullable=False, default=1)
+    affected_users_json = db.Column(db.Text, nullable=True)
     occurred_at = db.Column(db.DateTime, nullable=False, index=True)
     received_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, index=True)
     user_id = db.Column(db.Integer, nullable=True, index=True)
@@ -41,3 +44,21 @@ class CrashMappingFile(db.Model):
     __table_args__ = (
         db.UniqueConstraint("platform", "app_version", name="uq_crash_mapping_platform_version"),
     )
+
+
+class ResolvedCrashSignature(db.Model):
+    __tablename__ = "resolved_crash_signatures"
+
+    id = db.Column(db.Integer, primary_key=True)
+    signature = db.Column(db.String(64), nullable=False, unique=True, index=True)
+    resolved_by_admin_id = db.Column(db.Integer, nullable=True, index=True)
+    resolved_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, index=True)
+
+
+class CrashEventId(db.Model):
+    __tablename__ = "crash_event_ids"
+
+    id = db.Column(db.Integer, primary_key=True)
+    event_id = db.Column(db.String(64), nullable=False, unique=True, index=True)
+    crash_log_id = db.Column(db.Integer, nullable=False, index=True)
+    received_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, index=True)

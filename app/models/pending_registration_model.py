@@ -25,7 +25,8 @@ class PendingRegistration(db.Model):
     @staticmethod
     def _as_utc(value: datetime) -> datetime:
         if value.tzinfo is None:
-            return value.replace(tzinfo=timezone.utc)
+            local_tz = datetime.now().astimezone().tzinfo or timezone.utc
+            return value.replace(tzinfo=local_tz).astimezone(timezone.utc)
         return value.astimezone(timezone.utc)
 
     def is_expired(self, now=None):

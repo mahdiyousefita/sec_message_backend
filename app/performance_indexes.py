@@ -45,7 +45,7 @@ MANAGED_INDEX_SPECS: tuple[IndexSpec, ...] = (
         table_name="posts",
         index_name="ix_posts_quoted_post_id",
         ddl_target="posts (quoted_post_id)",
-        rollback_safe=True,
+        rollback_safe=False,
     ),
     IndexSpec(
         table_name="comments",

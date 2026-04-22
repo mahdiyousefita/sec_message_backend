@@ -496,9 +496,19 @@ def delete_account(username: str):
             (Block.blocker_id == user_id) | (Block.blocked_id == user_id)
         ).delete(synchronize_session=False)
 
+        created_group_ids = [
+            int(row[0])
+            for row in db.session.query(Group.id).filter(Group.creator_id == user_id).all()
+            if row and row[0] is not None
+        ]
+
         GroupMember.query.filter(
             GroupMember.user_id == user_id
         ).delete(synchronize_session=False)
+        if created_group_ids:
+            GroupMember.query.filter(
+                GroupMember.group_id.in_(created_group_ids)
+            ).delete(synchronize_session=False)
         Group.query.filter(
             Group.creator_id == user_id
         ).delete(synchronize_session=False)
