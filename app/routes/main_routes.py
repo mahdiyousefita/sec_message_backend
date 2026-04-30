@@ -16,6 +16,7 @@ from werkzeug.http import http_date, parse_date
 
 from app.extensions.minio_client import get_minio_client
 from app.services import app_update_service
+from app.services import about_us_service
 
 main_bp = Blueprint("main", __name__)
 
@@ -73,6 +74,11 @@ def check_app_version():
         "latest_version": evaluation.get("latest_version"),
     }
     return jsonify(payload), 200
+
+
+@main_bp.route("/api/about-us", methods=["GET"])
+def get_about_us():
+    return jsonify(about_us_service.get_public_about_us()), 200
 
 
 def _is_media_not_found(error: S3Error) -> bool:

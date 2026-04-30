@@ -82,10 +82,14 @@ class TestSocketMessageFlow(unittest.TestCase):
                 GroupMessage,
                 GroupMessageKeyRecipient,
                 GroupMessageRecipient,
+                GroupMessageUserDelete,
                 PrivateMessage,
+                PrivateMessageUserDelete,
             )
             from app.models.group_model import Group, GroupMember
 
+            self.db.session.query(GroupMessageUserDelete).delete()
+            self.db.session.query(PrivateMessageUserDelete).delete()
             self.db.session.query(GroupMessageRecipient).delete()
             self.db.session.query(GroupMessageKeyRecipient).delete()
             self.db.session.query(GroupMessage).delete()
@@ -1691,6 +1695,221 @@ class TestSocketMessageFlow(unittest.TestCase):
                 for event in status_events
             )
         )
+
+    def test_group_online_users_snapshot_socket_event(self):
+        group_id = self._create_group(name="group-online-snapshot")
+        alice = self._connect(self.alice_token)
+        bob = self._connect(self.bob_token)
+        alice.get_received()
+        bob.get_received()
+
+        alice.emit("get_group_online_users", {"group_id": group_id})
+        snapshot_events = [
+            event for event in alice.get_received() if event["name"] == "group_online_users"
+        ]
+        self.assertEqual(len(snapshot_events), 1)
+
+        payload = snapshot_events[0]["args"][0]
+        self.assertEqual(payload.get("group_id"), group_id)
+        usernames = {
+            (user or {}).get("username")
+            for user in payload.get("online_users", [])
+        }
+        self.assertIn("alice", usernames)
+        self.assertIn("bob", usernames)
+
+    def test_group_presence_changed_is_broadcast_to_group_members(self):
+        group_id = self._create_group(name="group-presence-updates")
+        alice = self._connect(self.alice_token)
+        alice.get_received()
+
+        bob = self._connect(self.bob_token)
+        online_events = [
+            event
+            for event in alice.get_received()
+            if event["name"] == "group_presence_changed"
+        ]
+        self.assertTrue(
+            any(
+                event["args"][0].get("group_id") == group_id
+                and event["args"][0].get("online") is True
+                and (event["args"][0].get("user") or {}).get("username") == "bob"
+                for event in online_events
+            )
+        )
+
+        bob.disconnect()
+        offline_events = [
+            event
+            for event in alice.get_received()
+            if event["name"] == "group_presence_changed"
+        ]
+        self.assertTrue(
+            any(
+                event["args"][0].get("group_id") == group_id
+                and event["args"][0].get("online") is False
+                and (event["args"][0].get("user") or {}).get("username") == "bob"
+                for event in offline_events
+            )
+        )
+
+    def test_group_online_users_http_endpoint_returns_online_members(self):
+        group_id = self._create_group(name="group-online-http")
+        alice = self._connect(self.alice_token)
+        bob = self._connect(self.bob_token)
+        alice.get_received()
+        bob.get_received()
+
+        http_client = self.app.test_client()
+        response = http_client.get(
+            f"/api/groups/{group_id}/online-users",
+            headers=self._auth_headers(self.alice_token),
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload.get("group_id"), group_id)
+        usernames = {
+            (user or {}).get("username")
+            for user in payload.get("online_users", [])
+        }
+        self.assertIn("alice", usernames)
+        self.assertIn("bob", usernames)
+
+    def test_group_typing_event_is_broadcast_to_other_members(self):
+        group_id = self._create_group(name="group-typing")
+        alice = self._connect(self.alice_token)
+        bob = self._connect(self.bob_token)
+        alice.get_received()
+        bob.get_received()
+
+        alice.emit("group_typing", {"group_id": group_id, "is_typing": True})
+        bob_events = [event for event in bob.get_received() if event["name"] == "group_typing"]
+        self.assertEqual(len(bob_events), 1)
+        payload = bob_events[0]["args"][0]
+        self.assertEqual(payload.get("group_id"), group_id)
+        self.assertTrue(payload.get("is_typing"))
+        self.assertEqual((payload.get("user") or {}).get("username"), "alice")
+
+        alice_events = [event for event in alice.get_received() if event["name"] == "group_typing"]
+        self.assertEqual(len(alice_events), 0)
+
+        alice.emit("group_typing", {"group_id": group_id, "is_typing": False})
+        bob_stop_events = [event for event in bob.get_received() if event["name"] == "group_typing"]
+        self.assertEqual(len(bob_stop_events), 1)
+        self.assertFalse(bob_stop_events[0]["args"][0].get("is_typing"))
+
+    def test_private_delete_for_me_is_persisted_in_history(self):
+        alice = self._connect(self.alice_token)
+        bob = self._connect(self.bob_token)
+        alice.get_received()
+        bob.get_received()
+
+        self._emit_private_message(
+            alice,
+            {"to": "bob", "message": "enc-msg-delete-for-me", "encrypted_key": "key-delete-for-me"},
+        )
+        alice_events = alice.get_received()
+        sent_events = [event for event in alice_events if event["name"] == "message_sent"]
+        self.assertEqual(len(sent_events), 1)
+        message_id = sent_events[0]["args"][0]["message_id"]
+        bob.get_received()
+
+        bob.emit(
+            "delete_message_for_me",
+            {"chat_id": "alice", "message_id": message_id},
+        )
+        bob_delete_events = bob.get_received()
+        self.assertTrue(
+            any(event["name"] == "message_deleted_for_me" for event in bob_delete_events)
+        )
+
+        http_client = self.app.test_client()
+        bob_history_resp = http_client.get(
+            "/api/messages/history/private/alice",
+            headers=self._auth_headers(self.bob_token),
+        )
+        self.assertEqual(bob_history_resp.status_code, 200)
+        bob_history_ids = {
+            (message or {}).get("message_id")
+            for message in bob_history_resp.get_json().get("messages", [])
+        }
+        self.assertNotIn(message_id, bob_history_ids)
+
+        alice_history_resp = http_client.get(
+            "/api/messages/history/private/bob",
+            headers=self._auth_headers(self.alice_token),
+        )
+        self.assertEqual(alice_history_resp.status_code, 200)
+        alice_history_ids = {
+            (message or {}).get("message_id")
+            for message in alice_history_resp.get_json().get("messages", [])
+        }
+        self.assertIn(message_id, alice_history_ids)
+
+    def test_group_delete_for_me_is_persisted_in_history(self):
+        group_id = self._create_group(name="group-delete-for-me")
+        alice = self._connect(self.alice_token)
+        bob = self._connect(self.bob_token)
+        alice.get_received()
+        bob.get_received()
+
+        self._emit_group_message(
+            alice,
+            {
+                "group_id": group_id,
+                "message": "enc-group-delete-for-me",
+                "encrypted_keys": {"alice": "alice-key", "bob": "bob-key"},
+            },
+        )
+        alice_events = alice.get_received()
+        sent_events = [event for event in alice_events if event["name"] == "group_message_sent"]
+        self.assertEqual(len(sent_events), 1)
+        message_id = sent_events[0]["args"][0]["message_id"]
+        bob.get_received()
+
+        bob.emit(
+            "delete_group_message_for_me",
+            {"group_id": group_id, "message_id": message_id},
+        )
+        bob_delete_events = bob.get_received()
+        self.assertTrue(
+            any(event["name"] == "group_message_deleted_for_me" for event in bob_delete_events)
+        )
+
+        http_client = self.app.test_client()
+        bob_history_resp = http_client.get(
+            f"/api/messages/history/group/{group_id}",
+            headers=self._auth_headers(self.bob_token),
+        )
+        self.assertEqual(bob_history_resp.status_code, 200)
+        bob_history_ids = {
+            (message or {}).get("message_id")
+            for message in bob_history_resp.get_json().get("messages", [])
+        }
+        self.assertNotIn(message_id, bob_history_ids)
+
+        alice_history_resp = http_client.get(
+            f"/api/messages/history/group/{group_id}",
+            headers=self._auth_headers(self.alice_token),
+        )
+        self.assertEqual(alice_history_resp.status_code, 200)
+        alice_history_ids = {
+            (message or {}).get("message_id")
+            for message in alice_history_resp.get_json().get("messages", [])
+        }
+        self.assertIn(message_id, alice_history_ids)
+
+    def test_private_delete_for_everyone_rejects_unknown_message_id(self):
+        alice = self._connect(self.alice_token)
+        alice.get_received()
+
+        alice.emit(
+            "delete_message",
+            {"chat_id": "bob", "message_id": "missing-message-id"},
+        )
+        error_events = [event for event in alice.get_received() if event["name"] == "message_error"]
+        self.assertEqual(len(error_events), 1)
+        self.assertIn("message not found", error_events[0]["args"][0].get("error", "").lower())
 
     def test_blocked_user_cannot_send_message_and_receives_block_event(self):
         alice = self._connect(self.alice_token)

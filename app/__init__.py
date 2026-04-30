@@ -32,9 +32,10 @@ from app.routes.report_routes import report_bp
 from app.routes.block_routes import block_bp
 from app.routes.playlist_routes import playlist_bp
 from app.routes.crash_routes import crash_bp
-from app.services import async_task_service, report_service
+from app.services import async_task_service, report_service, password_security
 
 import app.models.activity_notification_model  # noqa: F401 – register model with SQLAlchemy
+import app.models.about_us_model  # noqa: F401 – register model with SQLAlchemy
 import app.models.app_update_model  # noqa: F401 – register model with SQLAlchemy
 import app.models.block_model  # noqa: F401 – register model with SQLAlchemy
 import app.models.chat_message_model  # noqa: F401 – register model with SQLAlchemy
@@ -197,6 +198,25 @@ def _ensure_app_update_schema():
     db.session.commit()
 
 
+def _ensure_about_us_schema():
+    inspector = inspect(db.engine)
+    if not inspector.has_table("about_us_team_members"):
+        return
+
+    column_names = {
+        column["name"]
+        for column in inspector.get_columns("about_us_team_members")
+    }
+    if "display_name" not in column_names:
+        db.session.execute(
+            text(
+                "ALTER TABLE about_us_team_members "
+                "ADD COLUMN display_name VARCHAR(120)"
+            )
+        )
+        db.session.commit()
+
+
 def _ensure_private_message_sender_cipher_schema():
     inspector = inspect(db.engine)
     if not inspector.has_table("private_messages"):
@@ -286,7 +306,7 @@ def _ensure_group_recipient_seen_schema():
     if "seen_at" not in column_names:
         migration_sql.append(
             "ALTER TABLE group_message_recipients "
-            "ADD COLUMN seen_at DATETIME"
+            "ADD COLUMN seen_at TIMESTAMP"
         )
 
     for sql in migration_sql:
@@ -354,7 +374,7 @@ def _ensure_group_key_fanout_schema():
             "group_key_ref VARCHAR(128) NOT NULL, "
             "recipient_username VARCHAR(80) NOT NULL, "
             "encrypted_key TEXT NOT NULL, "
-            "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP"
+            "created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP"
             ")"
         )
     )
@@ -369,6 +389,56 @@ def _ensure_group_key_fanout_schema():
         text(
             "CREATE INDEX IF NOT EXISTS ix_group_message_key_lookup "
             "ON group_message_key_recipients (group_id, sender_username, group_key_ref)"
+        )
+    )
+    db.session.commit()
+
+
+def _ensure_message_user_delete_schema():
+    db.session.execute(
+        text(
+            "CREATE TABLE IF NOT EXISTS private_message_user_deletes ("
+            "id INTEGER PRIMARY KEY, "
+            "message_id VARCHAR(64) NOT NULL, "
+            "username VARCHAR(80) NOT NULL, "
+            "deleted_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP"
+            ")"
+        )
+    )
+    db.session.execute(
+        text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_private_message_user_delete "
+            "ON private_message_user_deletes (message_id, username)"
+        )
+    )
+    db.session.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_private_message_user_delete_lookup "
+            "ON private_message_user_deletes (username, message_id)"
+        )
+    )
+
+    db.session.execute(
+        text(
+            "CREATE TABLE IF NOT EXISTS group_message_user_deletes ("
+            "id INTEGER PRIMARY KEY, "
+            "message_id VARCHAR(64) NOT NULL, "
+            "group_id INTEGER NOT NULL, "
+            "username VARCHAR(80) NOT NULL, "
+            "deleted_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP"
+            ")"
+        )
+    )
+    db.session.execute(
+        text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_group_message_user_delete "
+            "ON group_message_user_deletes (message_id, username)"
+        )
+    )
+    db.session.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_group_message_user_delete_lookup "
+            "ON group_message_user_deletes (group_id, username, message_id)"
         )
     )
     db.session.commit()
@@ -433,6 +503,58 @@ def _ensure_crash_log_schema():
         text(
             "CREATE INDEX IF NOT EXISTS ix_crash_event_ids_crash_log_id "
             "ON crash_event_ids (crash_log_id)"
+        )
+    )
+    db.session.commit()
+
+
+def _ensure_user_created_at_schema():
+    inspector = inspect(db.engine)
+    if not inspector.has_table("users"):
+        return
+
+    column_names = {
+        column["name"]
+        for column in inspector.get_columns("users")
+    }
+    if "created_at" not in column_names:
+        db.session.execute(
+            text(
+                "ALTER TABLE users "
+                "ADD COLUMN created_at TIMESTAMP"
+            )
+        )
+
+    db.session.execute(
+        text(
+            "UPDATE users SET created_at = CURRENT_TIMESTAMP "
+            "WHERE created_at IS NULL"
+        )
+    )
+    db.session.commit()
+
+
+def _ensure_user_badge_schema():
+    inspector = inspect(db.engine)
+    if not inspector.has_table("users"):
+        return
+
+    column_names = {
+        column["name"]
+        for column in inspector.get_columns("users")
+    }
+    if "badge" not in column_names:
+        db.session.execute(
+            text(
+                "ALTER TABLE users "
+                "ADD COLUMN badge VARCHAR(64)"
+            )
+        )
+
+    db.session.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_users_badge "
+            "ON users (badge)"
         )
     )
     db.session.commit()
@@ -598,11 +720,21 @@ def create_app():
         _ensure_media_schema()
         _ensure_performance_indexes()
         _ensure_app_update_schema()
+        _ensure_about_us_schema()
         _ensure_private_message_sender_cipher_schema()
         _ensure_message_idempotency_schema()
         _ensure_group_recipient_seen_schema()
         _ensure_group_key_fanout_schema()
+        _ensure_message_user_delete_schema()
         _ensure_crash_log_schema()
+        _ensure_user_created_at_schema()
+        _ensure_user_badge_schema()
+        migrated_passwords = password_security.migrate_plaintext_passwords()
+        if migrated_passwords:
+            app.logger.info(
+                "Migrated %s legacy plaintext password records to Argon2id hashes.",
+                migrated_passwords,
+            )
 
     if os.getenv("FLASK_RUN_FROM_CLI", "").strip().lower() in {"1", "true"}:
         app.logger.info("Using Flask CLI runtime. For production prefer Gunicorn.")

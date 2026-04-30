@@ -30,12 +30,14 @@ def update_my_profile():
     content_type = (request.content_type or "").lower()
     name = None
     bio = None
+    profile_image_shape = None
     profile_image = None
     profile_video = None
 
     if "multipart/form-data" in content_type:
         name = request.form.get("name")
         bio = request.form.get("bio")
+        profile_image_shape = request.form.get("profile_image_shape")
         profile_image = request.files.get("profile_image") or request.files.get(
             "avatar"
         )
@@ -48,12 +50,14 @@ def update_my_profile():
             return jsonify({"error": "Invalid JSON body"}), 400
         name = data.get("name")
         bio = data.get("bio")
+        profile_image_shape = data.get("profile_image_shape")
 
     try:
         profile = profile_service.update_profile(
             username=username,
             name=name,
             bio=bio,
+            profile_image_shape=profile_image_shape,
             profile_image=profile_image,
             profile_video=profile_video,
         )

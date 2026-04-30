@@ -10,9 +10,11 @@ from sqlalchemy.exc import IntegrityError
 from app.db import db
 from app.extensions.redis_client import redis_client
 from app.models.chat_message_model import (
+    GroupMessageUserDelete,
     GroupMessage,
     GroupMessageKeyRecipient,
     GroupMessageRecipient,
+    PrivateMessageUserDelete,
     PrivateMessage,
 )
 from app.models.group_model import GroupMember
@@ -1274,9 +1276,19 @@ def get_private_message_history(username, chat_id, limit=50, before_timestamp=No
     safe_limit = max(1, min(200, int(limit or 50)))
     before_dt = _parse_optional_iso_datetime(before_timestamp)
 
+    user_deleted_subquery = (
+        db.session.query(PrivateMessageUserDelete.id)
+        .filter(
+            PrivateMessageUserDelete.message_id == PrivateMessage.message_id,
+            PrivateMessageUserDelete.username == username,
+        )
+        .exists()
+    )
+
     query = (
         PrivateMessage.query.filter(
             PrivateMessage.deleted_for_everyone.is_(False),
+            ~user_deleted_subquery,
             or_(
                 and_(
                     PrivateMessage.sender_username == username,
@@ -2041,6 +2053,57 @@ def mark_private_message_deleted(username, chat_id, message_id):
     pipe.execute()
 
 
+def mark_private_message_deleted_for_user(username, chat_id, message_id):
+    if not username or not chat_id or not message_id:
+        return False
+
+    deleted = False
+    if _db_available():
+        row = (
+            PrivateMessage.query.filter(
+                PrivateMessage.message_id == message_id,
+                or_(
+                    and_(
+                        PrivateMessage.sender_username == chat_id,
+                        PrivateMessage.recipient_username == username,
+                    ),
+                    and_(
+                        PrivateMessage.sender_username == username,
+                        PrivateMessage.recipient_username == chat_id,
+                    ),
+                ),
+            )
+            .first()
+        )
+        if row is None:
+            return False
+
+        existing = (
+            PrivateMessageUserDelete.query.filter_by(
+                message_id=message_id,
+                username=username,
+            )
+            .first()
+        )
+        if existing is None:
+            db.session.add(
+                PrivateMessageUserDelete(
+                    message_id=message_id,
+                    username=username,
+                    deleted_at=_utc_now_naive(),
+                )
+            )
+            db.session.commit()
+        deleted = True
+
+    key = f"private_deleted:{username}:{chat_id}"
+    pipe = redis_client.pipeline()
+    pipe.sadd(key, message_id)
+    pipe.expire(key, MESSAGE_DELETED_TTL_SECONDS)
+    pipe.execute()
+    return deleted or not _db_available()
+
+
 def get_private_deleted_message_ids(username, chat_id, message_ids):
     if not username or not chat_id or not message_ids:
         return []
@@ -2057,11 +2120,23 @@ def get_private_deleted_message_ids(username, chat_id, message_ids):
             if status
         ]
 
+    user_deleted_subquery = (
+        db.session.query(PrivateMessageUserDelete.id)
+        .filter(
+            PrivateMessageUserDelete.message_id == PrivateMessage.message_id,
+            PrivateMessageUserDelete.username == username,
+        )
+        .exists()
+    )
+
     rows = (
         PrivateMessage.query.with_entities(PrivateMessage.message_id)
         .filter(
             PrivateMessage.message_id.in_(normalized_ids),
-            PrivateMessage.deleted_for_everyone.is_(True),
+            or_(
+                PrivateMessage.deleted_for_everyone.is_(True),
+                user_deleted_subquery,
+            ),
             or_(
                 and_(
                     PrivateMessage.sender_username == username,
@@ -2103,6 +2178,50 @@ def mark_group_message_deleted(username, group_id, message_id):
     pipe.execute()
 
 
+def mark_group_message_deleted_for_user(username, group_id, message_id):
+    if not username or not group_id or not message_id:
+        return False
+
+    deleted = False
+    normalized_group_id = int(group_id)
+    if _db_available():
+        row = (
+            GroupMessage.query.filter_by(
+                group_id=normalized_group_id,
+                message_id=message_id,
+            )
+            .first()
+        )
+        if row is None:
+            return False
+
+        existing = (
+            GroupMessageUserDelete.query.filter_by(
+                message_id=message_id,
+                username=username,
+            )
+            .first()
+        )
+        if existing is None:
+            db.session.add(
+                GroupMessageUserDelete(
+                    message_id=message_id,
+                    group_id=normalized_group_id,
+                    username=username,
+                    deleted_at=_utc_now_naive(),
+                )
+            )
+            db.session.commit()
+        deleted = True
+
+    key = f"group_deleted:{username}:{group_id}"
+    pipe = redis_client.pipeline()
+    pipe.sadd(key, message_id)
+    pipe.expire(key, MESSAGE_DELETED_TTL_SECONDS)
+    pipe.execute()
+    return deleted or not _db_available()
+
+
 def get_group_deleted_message_ids(username, group_id, message_ids):
     if not username or not group_id or not message_ids:
         return []
@@ -2119,12 +2238,25 @@ def get_group_deleted_message_ids(username, group_id, message_ids):
             if status
         ]
 
+    user_deleted_subquery = (
+        db.session.query(GroupMessageUserDelete.id)
+        .filter(
+            GroupMessageUserDelete.message_id == GroupMessage.message_id,
+            GroupMessageUserDelete.username == username,
+            GroupMessageUserDelete.group_id == int(group_id),
+        )
+        .exists()
+    )
+
     rows = (
         GroupMessage.query.with_entities(GroupMessage.message_id)
         .filter(
             GroupMessage.group_id == int(group_id),
             GroupMessage.message_id.in_(normalized_ids),
-            GroupMessage.deleted_for_everyone.is_(True),
+            or_(
+                GroupMessage.deleted_for_everyone.is_(True),
+                user_deleted_subquery,
+            ),
         )
         .all()
     )
@@ -2725,6 +2857,18 @@ def get_group_message_history(group_id, username=None, limit=50, before_timestam
     )
 
     normalized_username = username.strip() if isinstance(username, str) else None
+
+    if normalized_username:
+        user_deleted_subquery = (
+            db.session.query(GroupMessageUserDelete.id)
+            .filter(
+                GroupMessageUserDelete.message_id == GroupMessage.message_id,
+                GroupMessageUserDelete.group_id == int(group_id),
+                GroupMessageUserDelete.username == normalized_username,
+            )
+            .exists()
+        )
+        base_filters = base_filters + (~user_deleted_subquery,)
 
     if normalized_username:
         joined_at_row = (

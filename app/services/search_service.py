@@ -26,7 +26,13 @@ def _serialize_user(user, profile):
         "id": user.id,
         "username": user.username,
         "name": profile.name if profile else user.username,
+        "badge": user.badge,
         "profile_image_url": profile_image_url,
+        "profile_image_shape": (
+            profile.profile_image_shape
+            if profile and profile.profile_image_shape
+            else "circle"
+        ),
     }
 
 

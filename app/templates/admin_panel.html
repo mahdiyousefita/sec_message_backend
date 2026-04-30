@@ -89,6 +89,10 @@ tr:hover{background:#1e293b}
 .online-user-item{display:flex;align-items:center;gap:.45rem;background:#0f172a;border:1px solid #334155;border-radius:999px;padding:.35rem .65rem;font-size:.8rem}
 .online-user-name{font-size:.75rem;color:#94a3b8}
 .online-dot{width:.5rem;height:.5rem;border-radius:999px;background:#22c55e;box-shadow:0 0 0 3px rgba(34,197,94,.2)}
+.about-link-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:.75rem}
+.about-member-row{display:grid;grid-template-columns:minmax(120px,1fr) minmax(130px,1fr) minmax(180px,2fr) auto;gap:.55rem;align-items:center}
+.about-member-row .btn{white-space:nowrap}
+.about-member-empty{font-size:.8rem;color:#94a3b8}
 
 /* Post detail */
 .post-detail{margin-bottom:1.5rem;padding:1rem;background:#0f172a;border-radius:8px}
@@ -121,6 +125,7 @@ tr:hover{background:#1e293b}
 .badge{display:inline-block;padding:.15rem .5rem;border-radius:4px;font-size:.7rem;font-weight:600}
 .badge-admin{background:#7c3aed;color:#fff}
 .badge-user{background:#334155;color:#94a3b8}
+.badge-custom{background:#0f766e;color:#ccfbf1}
 .badge-success{background:#166534;color:#dcfce7}
 .badge-warning{background:#78350f;color:#fef3c7}
 .badge-danger{background:#7f1d1d;color:#fecaca}
@@ -150,6 +155,7 @@ tr:hover{background:#1e293b}
   <div class="tab" data-tab="reports" onclick="switchTab('reports')">Reports</div>
   <div class="tab" data-tab="crash" onclick="switchTab('crash')">Crash Logs</div>
   <div class="tab" data-tab="updates" onclick="switchTab('updates')">App Updates</div>
+  <div class="tab" data-tab="about" onclick="switchTab('about')">About Us</div>
 </div>
 
 <div class="container">
@@ -212,6 +218,7 @@ tr:hover{background:#1e293b}
         <option value="violence">Violence</option>
         <option value="spam">Spam</option>
         <option value="false_information">False Information</option>
+        <option value="copyright">Copyright</option>
       </select>
       <button onclick="searchReports()">Apply</button>
     </div>
@@ -298,6 +305,62 @@ tr:hover{background:#1e293b}
       <div id="mappingList" style="margin-top:1rem"></div>
     </div>
   </div>
+
+  <!-- About Us Section -->
+  <div class="section" id="sec-about">
+    <div class="card">
+      <h3>About Us Content</h3>
+      <div class="form-group">
+        <label for="aboutDescription">Description text</label>
+        <textarea id="aboutDescription" placeholder="Write about your app/team..."></textarea>
+      </div>
+      <div class="form-note">Each link is optional, but when provided it must have both title and URL/value.</div>
+      <div class="about-link-grid">
+        <div class="form-group">
+          <label for="aboutWebsiteTitle">Website title</label>
+          <input type="text" id="aboutWebsiteTitle" placeholder="Official website">
+          <label for="aboutWebsiteUrl">Website URL</label>
+          <input type="text" id="aboutWebsiteUrl" placeholder="https://example.com">
+          <label style="display:flex;align-items:center;gap:.4rem;font-size:.82rem;color:#94a3b8">
+            <input type="checkbox" id="aboutWebsiteDisabled">
+            Disable click in app
+          </label>
+        </div>
+        <div class="form-group">
+          <label for="aboutSourceTitle">Source code title</label>
+          <input type="text" id="aboutSourceTitle" placeholder="GitHub repository">
+          <label for="aboutSourceUrl">Source code URL</label>
+          <input type="text" id="aboutSourceUrl" placeholder="https://github.com/org/repo">
+          <label style="display:flex;align-items:center;gap:.4rem;font-size:.82rem;color:#94a3b8">
+            <input type="checkbox" id="aboutSourceDisabled">
+            Disable click in app
+          </label>
+        </div>
+        <div class="form-group">
+          <label for="aboutEmailTitle">Email title</label>
+          <input type="text" id="aboutEmailTitle" placeholder="Contact us">
+          <label for="aboutEmailUrl">Email address / mailto</label>
+          <input type="text" id="aboutEmailUrl" placeholder="support@example.com">
+          <label style="display:flex;align-items:center;gap:.4rem;font-size:.82rem;color:#94a3b8">
+            <input type="checkbox" id="aboutEmailDisabled">
+            Disable click in app
+          </label>
+        </div>
+      </div>
+      <div class="modal-actions" style="margin-top:0">
+        <button class="btn btn-success" onclick="saveAboutUsSettings()">Save About Us</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Team Members</h3>
+      <div class="form-note">Add usernames of existing app users, optional custom display names, and describe their role.</div>
+      <div id="aboutTeamMembers"></div>
+      <div class="modal-actions" style="justify-content:flex-start">
+        <button class="btn btn-secondary" onclick="addAboutTeamMemberRow()">Add Team Member</button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <!-- Post Detail Modal -->
@@ -339,6 +402,26 @@ tr:hover{background:#1e293b}
   </div>
 </div>
 
+<!-- Edit Badge Modal -->
+<div class="modal-overlay" id="badgeModal">
+  <div class="modal" style="max-width:460px">
+    <button class="close-btn" onclick="closeBadgeModal()">&times;</button>
+    <h2>Edit User Badge</h2>
+    <div class="form-note">User: <span id="badgeModalUsername"></span></div>
+    <div class="form-group">
+      <label for="badgeSelect">Badge</label>
+      <select id="badgeSelect">
+        <option value="">No badge</option>
+      </select>
+    </div>
+    <div class="form-note">Badges come from the backend catalog. Choose "No badge" to clear.</div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeBadgeModal()">Cancel</button>
+      <button class="btn btn-success" onclick="saveBadgeChanges()">Save</button>
+    </div>
+  </div>
+</div>
+
 <!-- Confirm Dialog -->
 <div class="confirm-overlay" id="confirmDialog">
   <div class="confirm-box">
@@ -362,6 +445,9 @@ let usersPage = 1, postsPage = 1, reportsPage = 1, crashLogsPage = 1;
 let crashLogsRequestToken = 0;
 let editingCredentialUserId = null;
 let editingCredentialOriginalUsername = '';
+let editingBadgeUserId = null;
+let editingBadgeUsername = '';
+let availableUserBadges = [];
 let onlineUsersPollTimer = null;
 
 function api(path, opts = {}) {
@@ -395,6 +481,7 @@ function toast(msg, type = 'success') {
     logout();
     return;
   }
+  await loadBadgeCatalog();
   startOnlineUsersPolling();
   searchUsers();
 })();
@@ -410,9 +497,11 @@ function switchTab(tab) {
   } else if (tab === 'posts') searchPosts();
   else if (tab === 'reports') searchReports();
   else if (tab === 'crash') searchCrashLogs();
-  else {
+  else if (tab === 'updates') {
     loadUpdateSettings();
     loadCrashMappings();
+  } else if (tab === 'about') {
+    loadAboutUsSettings();
   }
   if (tab !== 'users') stopOnlineUsersPolling();
 }
@@ -474,10 +563,12 @@ function renderOnlineUsers(data) {
     const roleBadge = user.is_admin
       ? '<span class="badge badge-admin">Admin</span>'
       : '<span class="badge badge-user">User</span>';
+    const customBadge = renderCustomBadge(user.badge);
     html += `<div class="online-user-item">
       <span class="online-dot"></span>
       <span>${esc(user.username)}</span>
       ${roleBadge}
+      ${customBadge}
       <span class="online-user-name">(${esc(user.name || user.username)})</span>
     </div>`;
   }
@@ -501,10 +592,12 @@ function renderRecentOnlineUsers(data) {
     const roleBadge = user.is_admin
       ? '<span class="badge badge-admin">Admin</span>'
       : '<span class="badge badge-user">User</span>';
+    const customBadge = renderCustomBadge(user.badge);
     html += `<div class="online-user-item">
       <span class="online-dot"></span>
       <span>${esc(user.username)}</span>
       ${roleBadge}
+      ${customBadge}
       <span class="online-user-name">(${esc(user.name || user.username)})</span>
     </div>`;
   }
@@ -526,20 +619,25 @@ function renderUsersTable(data) {
   const container = document.getElementById('usersTable');
   if (!users.length) { container.innerHTML = '<div class="empty">No users found</div>'; document.getElementById('usersPagination').innerHTML = ''; return; }
 
-  let html = '<table><thead><tr><th>ID</th><th>Username</th><th>Name</th><th>Role</th><th>Actions</th></tr></thead><tbody>';
+  let html = '<table><thead><tr><th>ID</th><th>Username</th><th>Name</th><th>Role</th><th>Badge</th><th>Actions</th></tr></thead><tbody>';
   for (const u of users) {
-    const badge = u.is_admin ? '<span class="badge badge-admin">Admin</span>' : '<span class="badge badge-user">User</span>';
+    const roleBadge = u.is_admin ? '<span class="badge badge-admin">Admin</span>' : '<span class="badge badge-user">User</span>';
+    const customBadge = renderCustomBadge(u.badge) || '<span class="form-note">—</span>';
     const usernameArg = JSON.stringify(u.username || '');
+    const badgeArg = JSON.stringify(u.badge || '');
     const promoteBtn = u.is_admin
-      ? `<button class="btn btn-warning" onclick="demoteUser(${u.id},'${esc(u.username)}')">Demote</button>`
-      : `<button class="btn btn-success" onclick="promoteUser(${u.id},'${esc(u.username)}')">Promote</button>`;
+      ? `<button class="btn btn-warning" onclick='demoteUser(${u.id}, ${usernameArg})'>Demote</button>`
+      : `<button class="btn btn-success" onclick='promoteUser(${u.id}, ${usernameArg})'>Promote</button>`;
     const credentialBtn = `<button class="btn btn-info" onclick='openCredentialModal(${u.id}, ${usernameArg})'>Edit Creds</button>`;
+    const badgeBtn = `<button class="btn btn-secondary" onclick='openBadgeModal(${u.id}, ${usernameArg}, ${badgeArg})'>Set Badge</button>`;
+    const deleteBtn = `<button class="btn btn-danger" onclick='deleteUser(${u.id}, ${usernameArg})'>Delete</button>`;
     html += `<tr>
       <td>${u.id}</td>
       <td>${esc(u.username)}</td>
       <td>${esc(u.name)}</td>
-      <td>${badge}</td>
-      <td>${credentialBtn} ${promoteBtn} <button class="btn btn-danger" onclick="deleteUser(${u.id},'${esc(u.username)}')">Delete</button></td>
+      <td>${roleBadge}</td>
+      <td>${customBadge}</td>
+      <td>${credentialBtn} ${badgeBtn} ${promoteBtn} ${deleteBtn}</td>
     </tr>`;
   }
   html += '</tbody></table>';
@@ -570,6 +668,69 @@ function deleteUser(id, name) {
     if (res.ok) { toast('User deleted'); searchUsers(usersPage); }
     else { const d = await res.json(); toast(d.error || 'Failed', 'error'); }
   });
+}
+
+async function loadBadgeCatalog() {
+  const res = await api('/api/badges');
+  if (!res.ok) {
+    toast('Failed to load badge catalog', 'error');
+    availableUserBadges = [];
+    return;
+  }
+
+  const data = await res.json().catch(() => ({}));
+  availableUserBadges = Array.isArray(data.badges) ? data.badges : [];
+}
+
+function openBadgeModal(userId, username, currentBadge = '') {
+  editingBadgeUserId = userId;
+  editingBadgeUsername = String(username || '');
+  document.getElementById('badgeModalUsername').textContent = editingBadgeUsername;
+
+  const selectEl = document.getElementById('badgeSelect');
+  const selectedBadge = String(currentBadge || '').trim();
+  let html = '<option value="">No badge</option>';
+  for (const badge of availableUserBadges) {
+    const value = String(badge || '').trim();
+    if (!value) continue;
+    const selected = value === selectedBadge ? ' selected' : '';
+    html += `<option value="${esc(value)}"${selected}>${esc(value)}</option>`;
+  }
+  selectEl.innerHTML = html;
+  if (!selectedBadge) selectEl.value = '';
+
+  document.getElementById('badgeModal').classList.add('visible');
+}
+
+function closeBadgeModal() {
+  editingBadgeUserId = null;
+  editingBadgeUsername = '';
+  document.getElementById('badgeModal').classList.remove('visible');
+}
+
+async function saveBadgeChanges() {
+  if (!editingBadgeUserId) {
+    toast('No selected user', 'error');
+    return;
+  }
+
+  const selectedBadge = document.getElementById('badgeSelect').value;
+  const res = await api('/api/users/' + editingBadgeUserId + '/badge', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ badge: selectedBadge }),
+  });
+
+  const data = await res.json().catch(() => ({}));
+  if (res.ok) {
+    closeBadgeModal();
+    toast(data.message || 'Badge updated');
+    searchUsers(usersPage);
+    loadOnlineUsers();
+    loadRecentOnlineUsers();
+  } else {
+    toast(data.error || 'Failed to update badge', 'error');
+  }
 }
 
 function openCredentialModal(userId, currentUsername) {
@@ -699,6 +860,7 @@ function reportTypeLabel(raw) {
     case 'violence': return 'Violence';
     case 'spam': return 'Spam';
     case 'false_information': return 'False Information';
+    case 'copyright': return 'Copyright';
     default: return raw || '-';
   }
 }
@@ -1094,6 +1256,164 @@ async function uploadCrashMapping() {
   }
 }
 
+// ── About Us ──────────────────────────────
+function setAboutLinkInputs(linkType, data = {}) {
+  if (linkType === 'website') {
+    document.getElementById('aboutWebsiteTitle').value = data.title || '';
+    document.getElementById('aboutWebsiteUrl').value = data.url || '';
+    document.getElementById('aboutWebsiteDisabled').checked = !!data.is_disabled;
+    return;
+  }
+  if (linkType === 'source_code') {
+    document.getElementById('aboutSourceTitle').value = data.title || '';
+    document.getElementById('aboutSourceUrl').value = data.url || '';
+    document.getElementById('aboutSourceDisabled').checked = !!data.is_disabled;
+    return;
+  }
+  if (linkType === 'email') {
+    document.getElementById('aboutEmailTitle').value = data.title || '';
+    document.getElementById('aboutEmailUrl').value = data.url || '';
+    document.getElementById('aboutEmailDisabled').checked = !!data.is_disabled;
+  }
+}
+
+function readAboutLinkInput(linkType) {
+  if (linkType === 'website') {
+    return {
+      title: document.getElementById('aboutWebsiteTitle').value.trim(),
+      url: document.getElementById('aboutWebsiteUrl').value.trim(),
+      is_disabled: document.getElementById('aboutWebsiteDisabled').checked,
+    };
+  }
+  if (linkType === 'source_code') {
+    return {
+      title: document.getElementById('aboutSourceTitle').value.trim(),
+      url: document.getElementById('aboutSourceUrl').value.trim(),
+      is_disabled: document.getElementById('aboutSourceDisabled').checked,
+    };
+  }
+  return {
+    title: document.getElementById('aboutEmailTitle').value.trim(),
+    url: document.getElementById('aboutEmailUrl').value.trim(),
+    is_disabled: document.getElementById('aboutEmailDisabled').checked,
+  };
+}
+
+function addAboutTeamMemberRow(username = '', customName = '', role = '') {
+  const list = document.getElementById('aboutTeamMembers');
+  const row = document.createElement('div');
+  row.className = 'about-member-row';
+  row.style.marginBottom = '.55rem';
+
+  const usernameInput = document.createElement('input');
+  usernameInput.type = 'text';
+  usernameInput.placeholder = 'username';
+  usernameInput.value = username;
+
+  const customNameInput = document.createElement('input');
+  customNameInput.type = 'text';
+  customNameInput.placeholder = 'Display name (optional)';
+  customNameInput.value = customName;
+
+  const roleInput = document.createElement('input');
+  roleInput.type = 'text';
+  roleInput.placeholder = 'Role description';
+  roleInput.value = role;
+
+  const removeButton = document.createElement('button');
+  removeButton.className = 'btn btn-danger';
+  removeButton.type = 'button';
+  removeButton.textContent = 'Remove';
+  removeButton.onclick = () => {
+    row.remove();
+    ensureAboutTeamMemberPlaceholder();
+  };
+
+  row.appendChild(usernameInput);
+  row.appendChild(customNameInput);
+  row.appendChild(roleInput);
+  row.appendChild(removeButton);
+  list.appendChild(row);
+  ensureAboutTeamMemberPlaceholder();
+}
+
+function ensureAboutTeamMemberPlaceholder() {
+  const list = document.getElementById('aboutTeamMembers');
+  const rows = list.querySelectorAll('.about-member-row');
+  const existing = list.querySelector('.about-member-empty');
+  if (!rows.length && !existing) {
+    const hint = document.createElement('div');
+    hint.className = 'about-member-empty';
+    hint.textContent = 'No team members configured yet.';
+    list.appendChild(hint);
+    return;
+  }
+  if (rows.length && existing) existing.remove();
+}
+
+function getAboutTeamMembersPayload() {
+  const rows = Array.from(document.querySelectorAll('#aboutTeamMembers .about-member-row'));
+  const members = [];
+  for (const row of rows) {
+    const inputs = row.querySelectorAll('input');
+    const username = (inputs[0]?.value || '').trim();
+    const custom_name = (inputs[1]?.value || '').trim();
+    const role = (inputs[2]?.value || '').trim();
+    if (!username && !custom_name && !role) continue;
+    members.push({ username, custom_name, role });
+  }
+  return members;
+}
+
+async function loadAboutUsSettings() {
+  const res = await api('/api/about-us');
+  if (!res.ok) {
+    toast('Failed to load About Us settings', 'error');
+    return;
+  }
+  const data = await res.json();
+  const aboutUs = data.about_us || {};
+  document.getElementById('aboutDescription').value = aboutUs.description || '';
+
+  const links = aboutUs.links || {};
+  setAboutLinkInputs('website', links.website || {});
+  setAboutLinkInputs('source_code', links.source_code || {});
+  setAboutLinkInputs('email', links.email || {});
+
+  const list = document.getElementById('aboutTeamMembers');
+  list.innerHTML = '';
+  const teamMembers = Array.isArray(aboutUs.team_members) ? aboutUs.team_members : [];
+  for (const member of teamMembers) {
+    addAboutTeamMemberRow(member.username || '', member.custom_name || '', member.role || '');
+  }
+  ensureAboutTeamMemberPlaceholder();
+}
+
+async function saveAboutUsSettings() {
+  const payload = {
+    description: document.getElementById('aboutDescription').value.trim(),
+    links: {
+      website: readAboutLinkInput('website'),
+      source_code: readAboutLinkInput('source_code'),
+      email: readAboutLinkInput('email'),
+    },
+    team_members: getAboutTeamMembersPayload(),
+  };
+
+  const res = await api('/api/about-us', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (res.ok) {
+    toast('About Us settings saved');
+    loadAboutUsSettings();
+  } else {
+    toast(data.error || 'Failed to save About Us settings', 'error');
+  }
+}
+
 // ── Post Detail Modal ──────────────────────
 async function viewPost(id) {
   document.getElementById('postModal').classList.add('visible');
@@ -1196,6 +1516,12 @@ function esc(s) {
   const d = document.createElement('div');
   d.textContent = String(s);
   return d.innerHTML;
+}
+
+function renderCustomBadge(badgeValue) {
+  const value = String(badgeValue || '').trim();
+  if (!value) return '';
+  return '<span class="badge badge-custom">' + esc(value) + '</span>';
 }
 </script>
 </body>

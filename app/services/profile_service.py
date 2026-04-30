@@ -28,18 +28,22 @@ from app.repositories import message_repository
 from app.repositories.follow_repository import count_followers, count_following
 from app.repositories.profile_repository import create_profile_for_user, get_by_user_id
 from app.services import block_service
+from app.services.media_security import (
+    is_blocked_declared_mimetype,
+    normalize_mimetype,
+    validate_upload_content,
+)
 from app.services.post_service import _get_mp4_duration_seconds, get_posts_by_username
 
-
-ALLOWED_PROFILE_IMAGE_MIME_TYPES = {
-    "image/jpeg",
-    "image/png",
-    "image/webp",
-}
-
-ALLOWED_PROFILE_VIDEO_MIME_TYPES = {
+VIDEO_MIME_TYPES_WITH_RELIABLE_DURATION = {
     "video/mp4",
     "video/quicktime",
+}
+PROFILE_IMAGE_SHAPE_CATALOG = {
+    "circle",
+    "pill",
+    "cookie_12_sided",
+    "cookie_9_sided",
 }
 
 
@@ -80,6 +84,24 @@ def _extension_for_mimetype(mimetype: str) -> str:
         "video/quicktime": "mov",
     }
     return mapping.get(mimetype, mimetype.split("/")[-1])
+
+
+def _normalize_mimetype(raw_mimetype: str | None) -> str:
+    return normalize_mimetype(raw_mimetype)
+
+
+def _is_blocked_media_mimetype(mimetype: str) -> bool:
+    return is_blocked_declared_mimetype(mimetype)
+
+
+def _is_profile_image_mimetype_allowed(mimetype: str) -> bool:
+    normalized = _normalize_mimetype(mimetype)
+    return normalized.startswith("image/") and not _is_blocked_media_mimetype(normalized)
+
+
+def _is_profile_video_mimetype_allowed(mimetype: str) -> bool:
+    normalized = _normalize_mimetype(mimetype)
+    return normalized.startswith("video/")
 
 
 def _get_stream_and_length(file_storage):
@@ -142,13 +164,36 @@ def _serialize_profile(user, profile):
     return {
         "username": user.username,
         "name": profile.name,
+        "badge": user.badge,
         "bio": profile.bio,
         "profile_image_url": _build_profile_media_url(profile.image_object_name),
+        "profile_image_shape": (
+            profile.profile_image_shape
+            if profile.profile_image_shape in PROFILE_IMAGE_SHAPE_CATALOG
+            else "circle"
+        ),
         "profile_video_url": _build_profile_media_url(video_object_name),
         "followers_count": count_followers(user.id),
         "following_count": count_following(user.id),
         "posts_count": Post.query.filter_by(author_id=user.id, is_hidden=False).count(),
     }
+
+
+def _normalize_profile_image_shape(raw_shape):
+    if raw_shape is None:
+        return None
+    if not isinstance(raw_shape, str):
+        raise ValueError("Profile image shape must be a string")
+
+    normalized = raw_shape.strip().lower()
+    if not normalized:
+        return "circle"
+    if normalized not in PROFILE_IMAGE_SHAPE_CATALOG:
+        raise ValueError(
+            "Unsupported profile image shape. "
+            f"Allowed values: {', '.join(sorted(PROFILE_IMAGE_SHAPE_CATALOG))}"
+        )
+    return normalized
 
 
 def get_profile_by_username(
@@ -171,6 +216,7 @@ def update_profile(
     username: str,
     name=None,
     bio=None,
+    profile_image_shape=None,
     profile_image=None,
     profile_video=None,
 ):
@@ -183,6 +229,7 @@ def update_profile(
     if (
         name is None
         and bio is None
+        and profile_image_shape is None
         and profile_image is None
         and profile_video is None
     ):
@@ -198,6 +245,14 @@ def update_profile(
             raise ValueError("Bio must be a string")
         profile.bio = bio.strip()
 
+    normalized_shape = _normalize_profile_image_shape(profile_image_shape)
+    if normalized_shape is not None:
+        if not user.badge:
+            raise ValueError(
+                "Profile image shape customization is available only for users with a badge"
+            )
+        profile.profile_image_shape = normalized_shape
+
     bucket = current_app.config["MINIO_BUCKET"]
     minio = None
 
@@ -207,13 +262,33 @@ def update_profile(
     if profile_image is not None:
         if not getattr(profile_image, "filename", ""):
             raise ValueError("Profile image file is required")
-        if profile_image.mimetype not in ALLOWED_PROFILE_IMAGE_MIME_TYPES:
-            raise ValueError(f"Unsupported media type: {profile_image.mimetype}")
+        image_mimetype = _normalize_mimetype(getattr(profile_image, "mimetype", ""))
+        if not _is_profile_image_mimetype_allowed(image_mimetype):
+            raise ValueError(f"Unsupported media type: {image_mimetype}")
+        if bool(current_app.config.get("MEDIA_CONTENT_SNIFFING_ENABLED", True)):
+            image_validation_error = validate_upload_content(
+                profile_image,
+                image_mimetype,
+                allowed_categories={"image"},
+                reject_active_text_payloads=bool(
+                    current_app.config.get("MEDIA_CONTENT_REJECT_ACTIVE_TEXT", True)
+                ),
+                enforce_declared_category_match=bool(
+                    current_app.config.get("MEDIA_CONTENT_ENFORCE_CATEGORY_MATCH", True)
+                ),
+                sniff_bytes=int(current_app.config.get("MEDIA_CONTENT_SNIFF_BYTES", 2048)),
+            )
+            if image_validation_error in {"unsupported_declared_type", "unsupported_detected_type"}:
+                raise ValueError(f"Unsupported media type: {image_mimetype}")
+            if image_validation_error in {"blocked_active_content", "declared_type_mismatch"}:
+                raise ValueError("Invalid profile image content")
+            if image_validation_error is not None:
+                raise ValueError("Could not validate profile image")
 
         if minio is None:
             minio = get_minio_client()
 
-        extension = _extension_for_mimetype(profile_image.mimetype)
+        extension = _extension_for_mimetype(image_mimetype)
         object_name = f"profiles/{user.id}/images/{uuid.uuid4()}.{extension}"
         stream, length = _get_stream_and_length(profile_image)
 
@@ -222,7 +297,7 @@ def update_profile(
             "object_name": object_name,
             "data": stream,
             "length": length,
-            "content_type": profile_image.mimetype,
+            "content_type": image_mimetype,
         }
         if length == -1:
             upload_kwargs["part_size"] = 10 * 1024 * 1024
@@ -236,21 +311,41 @@ def update_profile(
         if not getattr(profile_video, "filename", ""):
             raise ValueError("Profile video file is required")
 
-        mimetype = getattr(profile_video, "mimetype", "") or ""
-        if mimetype not in ALLOWED_PROFILE_VIDEO_MIME_TYPES:
+        mimetype = _normalize_mimetype(getattr(profile_video, "mimetype", ""))
+        if not _is_profile_video_mimetype_allowed(mimetype):
             raise ValueError(f"Unsupported media type: {mimetype}")
+        if bool(current_app.config.get("MEDIA_CONTENT_SNIFFING_ENABLED", True)):
+            video_validation_error = validate_upload_content(
+                profile_video,
+                mimetype,
+                allowed_categories={"video"},
+                reject_active_text_payloads=bool(
+                    current_app.config.get("MEDIA_CONTENT_REJECT_ACTIVE_TEXT", True)
+                ),
+                enforce_declared_category_match=bool(
+                    current_app.config.get("MEDIA_CONTENT_ENFORCE_CATEGORY_MATCH", True)
+                ),
+                sniff_bytes=int(current_app.config.get("MEDIA_CONTENT_SNIFF_BYTES", 2048)),
+            )
+            if video_validation_error in {"unsupported_declared_type", "unsupported_detected_type"}:
+                raise ValueError(f"Unsupported media type: {mimetype}")
+            if video_validation_error in {"blocked_active_content", "declared_type_mismatch"}:
+                raise ValueError("Invalid profile video content")
+            if video_validation_error is not None:
+                raise ValueError("Could not validate profile video")
 
         if minio is None:
             minio = get_minio_client()
 
-        duration_seconds = _get_mp4_duration_seconds(profile_video)
-        if duration_seconds is None:
-            raise ValueError("Could not determine profile video duration")
-        max_duration = _profile_video_max_duration_seconds()
-        if duration_seconds > max_duration:
-            raise ValueError(
-                f"Profile video must be {max_duration} seconds or shorter"
-            )
+        if mimetype in VIDEO_MIME_TYPES_WITH_RELIABLE_DURATION:
+            duration_seconds = _get_mp4_duration_seconds(profile_video)
+            if duration_seconds is None:
+                raise ValueError("Could not determine profile video duration")
+            max_duration = _profile_video_max_duration_seconds()
+            if duration_seconds > max_duration:
+                raise ValueError(
+                    f"Profile video must be {max_duration} seconds or shorter"
+                )
 
         extension = _extension_for_mimetype(mimetype)
         object_name = f"profiles/{user.id}/videos/{uuid.uuid4()}.{extension}"

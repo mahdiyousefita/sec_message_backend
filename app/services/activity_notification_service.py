@@ -72,7 +72,13 @@ def _serialize_notification(notif, user_by_id, profile_by_user_id):
             "id": notif.actor_id,
             "username": actor_username,
             "name": actor_name,
+            "badge": actor.badge if actor else None,
             "profile_image_url": actor_image,
+            "profile_image_shape": (
+                profile.profile_image_shape
+                if profile and profile.profile_image_shape
+                else "circle"
+            ),
         },
         "target_type": notif.target_type,
         "target_id": notif.target_id,

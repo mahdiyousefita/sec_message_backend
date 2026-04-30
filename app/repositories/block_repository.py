@@ -96,8 +96,10 @@ def get_blocked_users_page(blocker_id: int, page: int, limit: int):
         db.session.query(
             User.id,
             User.username,
+            User.badge,
             Profile.name,
             Profile.image_object_name,
+            Profile.profile_image_shape,
         )
         .join(Block, Block.blocked_id == User.id)
         .outerjoin(Profile, Profile.user_id == User.id)
@@ -116,7 +118,9 @@ def get_blocked_users_page(blocker_id: int, page: int, limit: int):
             "id": row.id,
             "username": row.username,
             "name": row.name or row.username,
+            "badge": row.badge,
             "image_object_name": row.image_object_name,
+            "profile_image_shape": row.profile_image_shape or "circle",
         }
         for row in rows
     ]

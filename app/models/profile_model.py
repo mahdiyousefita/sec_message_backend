@@ -14,4 +14,9 @@ class Profile(db.Model):
     name = db.Column(db.String(120), nullable=False)
     bio = db.Column(db.Text, nullable=False, default="")
     image_object_name = db.Column(db.String(255), nullable=True)
-
+    profile_image_shape = db.Column(
+        db.String(32),
+        nullable=False,
+        default="circle",
+        server_default="circle",
+    )

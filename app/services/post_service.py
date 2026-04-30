@@ -21,38 +21,20 @@ from app.repositories.media_repository import add_media
 from app.repositories import user_repository
 from app.services import block_service
 from app.services import async_task_service
+from app.services.media_security import (
+    is_blocked_declared_mimetype,
+    normalize_mimetype,
+    validate_upload_content,
+)
 from app.db import db
-
-
-
-
-ALLOWED_IMAGE_MIME_TYPES = {
-    "image/jpeg",
-    "image/png",
-    "image/webp",
-}
-
-ALLOWED_VIDEO_MIME_TYPES = {
-    "video/mp4",
-    "video/quicktime",
-}
-
-ALLOWED_AUDIO_MIME_TYPES = {
-    "audio/mpeg",
-    "audio/mp3",
-    "audio/mp4",
-    "audio/x-m4a",
-    "audio/aac",
-    "audio/wav",
-    "audio/x-wav",
-    "audio/ogg",
-    "audio/flac",
-    "audio/webm",
-}
 
 MAX_MEDIA_FILES = 8
 MAX_VIDEO_DURATION_SECONDS = 30 * 60
 MUSIC_TITLE_FALLBACK = "Music track"
+VIDEO_MIME_TYPES_WITH_RELIABLE_DURATION = {
+    "video/mp4",
+    "video/quicktime",
+}
 
 
 class MediaStorageError(Exception):
@@ -107,12 +89,17 @@ def _build_author_maps(author_ids: set[int]):
         return {}, {}
 
     user_rows = (
-        db.session.query(User.id, User.username)
+        db.session.query(User.id, User.username, User.badge)
         .filter(User.id.in_(author_ids))
         .all()
     )
     profile_rows = (
-        db.session.query(Profile.user_id, Profile.name, Profile.image_object_name)
+        db.session.query(
+            Profile.user_id,
+            Profile.name,
+            Profile.image_object_name,
+            Profile.profile_image_shape,
+        )
         .filter(Profile.user_id.in_(author_ids))
         .all()
     )
@@ -121,16 +108,18 @@ def _build_author_maps(author_ids: set[int]):
         user_id: {
             "id": user_id,
             "username": username,
+            "badge": badge,
         }
-        for user_id, username in user_rows
+        for user_id, username, badge in user_rows
     }
     profile_by_user_id = {
         user_id: {
             "user_id": user_id,
             "name": name,
             "image_object_name": image_object_name,
+            "profile_image_shape": profile_image_shape or "circle",
         }
-        for user_id, name, image_object_name in profile_rows
+        for user_id, name, image_object_name, profile_image_shape in profile_rows
     }
     return user_by_id, profile_by_user_id
 
@@ -150,7 +139,11 @@ def _serialize_author(author_id: int, user_by_id: dict, profile_by_user_id: dict
         "id": author_id,
         "username": username,
         "name": name,
+        "badge": user.get("badge") if user else None,
         "profile_image_url": profile_image_url,
+        "profile_image_shape": (
+            profile.get("profile_image_shape", "circle") if profile else "circle"
+        ),
     }
 
 
@@ -169,8 +162,10 @@ def _build_playlist_adders_by_media(posts: list[Post]):
             PlaylistTrack.media_id,
             User.id,
             User.username,
+            User.badge,
             Profile.name,
             Profile.image_object_name,
+            Profile.profile_image_shape,
             PlaylistTrack.created_at,
             PlaylistTrack.id,
         )
@@ -189,7 +184,7 @@ def _build_playlist_adders_by_media(posts: list[Post]):
     )
 
     adders_by_media_id: dict[int, list[dict]] = {}
-    for media_id, user_id, username, name, image_object_name, _, _ in rows:
+    for media_id, user_id, username, badge, name, image_object_name, profile_image_shape, _, _ in rows:
         profile_image_url = _build_media_url(image_object_name) if image_object_name else None
         adders = adders_by_media_id.setdefault(media_id, [])
         adders.append(
@@ -197,7 +192,9 @@ def _build_playlist_adders_by_media(posts: list[Post]):
                 "id": user_id,
                 "username": username,
                 "name": (name or "").strip() or username,
+                "badge": badge,
                 "profile_image_url": profile_image_url,
+                "profile_image_shape": profile_image_shape or "circle",
             }
         )
 
@@ -405,9 +402,27 @@ def _extension_for_mimetype(mimetype: str) -> str:
     return mapping.get(mimetype, mimetype.split("/")[-1])
 
 
+def _normalize_mimetype(raw_mimetype: str | None) -> str:
+    return normalize_mimetype(raw_mimetype)
+
+
+def _is_blocked_media_mimetype(mimetype: str) -> bool:
+    return is_blocked_declared_mimetype(mimetype)
+
+
+def _is_image_mimetype(mimetype: str) -> bool:
+    normalized = _normalize_mimetype(mimetype)
+    return normalized.startswith("image/") and not _is_blocked_media_mimetype(normalized)
+
+
+def _is_video_mimetype(mimetype: str) -> bool:
+    normalized = _normalize_mimetype(mimetype)
+    return normalized.startswith("video/")
+
+
 def _is_audio_mimetype(mimetype: str) -> bool:
-    normalized = (mimetype or "").strip().lower()
-    return normalized in ALLOWED_AUDIO_MIME_TYPES or normalized.startswith("audio/")
+    normalized = _normalize_mimetype(mimetype)
+    return normalized.startswith("audio/")
 
 
 def _normalize_music_text(value: str | None) -> str | None:
@@ -628,7 +643,26 @@ def create_post_with_media(
     for file in files:
         if not getattr(file, "filename", ""):
             raise ValueError("Media file is required")
-        mimetype = (getattr(file, "mimetype", "") or "").split(";")[0].strip().lower()
+        mimetype = _normalize_mimetype(getattr(file, "mimetype", ""))
+        if bool(current_app.config.get("MEDIA_CONTENT_SNIFFING_ENABLED", True)):
+            content_validation_error = validate_upload_content(
+                file,
+                mimetype,
+                allowed_categories={"image", "video", "audio"},
+                reject_active_text_payloads=bool(
+                    current_app.config.get("MEDIA_CONTENT_REJECT_ACTIVE_TEXT", True)
+                ),
+                enforce_declared_category_match=bool(
+                    current_app.config.get("MEDIA_CONTENT_ENFORCE_CATEGORY_MATCH", True)
+                ),
+                sniff_bytes=int(current_app.config.get("MEDIA_CONTENT_SNIFF_BYTES", 2048)),
+            )
+            if content_validation_error in {"unsupported_declared_type", "unsupported_detected_type"}:
+                raise ValueError(f"Unsupported media type: {mimetype}")
+            if content_validation_error in {"blocked_active_content", "declared_type_mismatch"}:
+                raise ValueError("Invalid media content for declared type")
+            if content_validation_error is not None:
+                raise ValueError("Could not validate media file")
         normalized_files.append((file, file.filename, mimetype))
 
     has_audio_file = any(_is_audio_mimetype(mimetype) for _, _, mimetype in normalized_files)
@@ -670,13 +704,14 @@ def create_post_with_media(
             )
             continue
 
-        if mimetype in ALLOWED_VIDEO_MIME_TYPES:
-            duration_seconds = _get_mp4_duration_seconds(file)
-            if duration_seconds is None:
-                raise ValueError("Could not determine video duration")
-            if duration_seconds > MAX_VIDEO_DURATION_SECONDS:
-                raise ValueError("Video must be 30 minutes or shorter")
-        elif mimetype not in ALLOWED_IMAGE_MIME_TYPES:
+        if _is_video_mimetype(mimetype):
+            if mimetype in VIDEO_MIME_TYPES_WITH_RELIABLE_DURATION:
+                duration_seconds = _get_mp4_duration_seconds(file)
+                if duration_seconds is None:
+                    raise ValueError("Could not determine video duration")
+                if duration_seconds > MAX_VIDEO_DURATION_SECONDS:
+                    raise ValueError("Video must be 30 minutes or shorter")
+        elif not _is_image_mimetype(mimetype):
             raise ValueError(f"Unsupported media type: {mimetype}")
 
         extension = _extension_for_mimetype(mimetype)
@@ -951,49 +986,78 @@ def get_posts_by_username(
         if viewer and block_service.user_ids_have_block_relation(viewer.id, user.id):
             raise ValueError("User not found")
 
-    if limit > 50:
-        limit = 50
+    page = max(1, int(page or 1))
+    limit = max(1, min(int(limit or 10), 50))
 
     viewer_user_id = _viewer_user_id(viewer_username)
 
-    query = (
+    base_query = (
         Post.query
         .filter(Post.author_id == user.id)
         .filter(
             Post.is_hidden.is_(False),
             _post_visibility_filter(viewer_user_id),
         )
-        .options(selectinload(Post.media))
-        .order_by(Post.created_at.desc())
     )
 
     total = (
-        query.with_entities(func.count(Post.id))
+        base_query.with_entities(func.count(Post.id))
         .order_by(None)
         .scalar()
         or 0
     )
-    posts = query.offset((page - 1) * limit).limit(limit).all()
+    offset = (page - 1) * limit
+    paged_post_ids = [
+        row[0]
+        for row in base_query
+        .with_entities(Post.id)
+        .order_by(Post.created_at.desc(), Post.id.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    ]
+
+    if not paged_post_ids:
+        return {
+            "page": page,
+            "limit": limit,
+            "total": total,
+            "posts": [],
+        }
+
+    posts = (
+        Post.query
+        .filter(Post.id.in_(paged_post_ids))
+        .options(selectinload(Post.media))
+        .all()
+    )
+    posts_by_id = {post.id: post for post in posts}
+    ordered_posts = [
+        posts_by_id[post_id]
+        for post_id in paged_post_ids
+        if post_id in posts_by_id
+    ]
+
     hidden_user_ids = block_service.hidden_user_ids_for_viewer(viewer_username)
     quoted_posts_by_id = _build_visible_quoted_posts(
-        posts,
+        ordered_posts,
         viewer_user_id=viewer_user_id,
         hidden_user_ids=hidden_user_ids,
     )
-    author_ids = {post.author_id for post in posts} | {
+    author_ids = {post.author_id for post in ordered_posts} | {
         quoted_post.author_id
         for quoted_post in quoted_posts_by_id.values()
     }
-    post_ids = {post.id for post in posts}
+    post_ids = set(paged_post_ids)
     user_by_id, profile_by_user_id = _build_author_maps(author_ids)
-    playlist_adders_by_media_id = _build_playlist_adders_by_media(posts)
+    playlist_adders_by_media_id = _build_playlist_adders_by_media(ordered_posts)
     vote_by_post_id = _build_vote_map(
         post_ids=post_ids,
         viewer_user_id=viewer_user_id,
     )
 
     serialized_posts = []
-    for post in posts:
+    for post in ordered_posts:
         payload = _serialize_post(
             post,
             user_by_id,

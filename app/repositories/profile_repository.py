@@ -7,6 +7,7 @@ def create_profile_for_user(user_id: int, name: str):
         user_id=user_id,
         name=name,
         bio="",
+        profile_image_shape="circle",
     )
     db.session.add(profile)
     return profile
@@ -14,4 +15,3 @@ def create_profile_for_user(user_id: int, name: str):
 
 def get_by_user_id(user_id: int):
     return Profile.query.filter_by(user_id=user_id).first()
-

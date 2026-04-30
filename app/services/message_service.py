@@ -8,33 +8,11 @@ from flask import current_app, has_request_context, request
 
 from app.extensions.minio_client import get_minio_client
 from app.repositories import block_repository, message_repository, user_repository
-
-
-ALLOWED_IMAGE_MIME_TYPES = {
-    "image/jpeg",
-    "image/png",
-    "image/webp",
-}
-
-ALLOWED_VIDEO_MIME_TYPES = {
-    "video/mp4",
-    "video/quicktime",
-}
-
-ALLOWED_AUDIO_MIME_TYPES = {
-    "audio/mpeg",
-    "audio/mp3",
-    "audio/wav",
-    "audio/webm",
-    "audio/ogg",
-    "audio/aac",
-    "audio/mp4",
-}
-
-ALL_ALLOWED_MIME_TYPES = (
-    ALLOWED_IMAGE_MIME_TYPES
-    | ALLOWED_VIDEO_MIME_TYPES
-    | ALLOWED_AUDIO_MIME_TYPES
+from app.services.media_security import (
+    is_allowed_declared_mimetype,
+    is_blocked_declared_mimetype,
+    normalize_mimetype,
+    validate_upload_content,
 )
 
 ALLOWED_MESSAGE_TYPES = {"text", "image", "video", "voice", "mixed", "post"}
@@ -58,6 +36,21 @@ def _sanitize_filename(filename: str) -> str:
     if len(name) > 200:
         name = name[:200]
     return name or "file"
+
+
+def _normalize_mimetype(raw_mimetype: str | None) -> str:
+    return normalize_mimetype(raw_mimetype)
+
+
+def _is_blocked_media_mimetype(mimetype: str) -> bool:
+    return is_blocked_declared_mimetype(mimetype)
+
+
+def _is_supported_media_mimetype(mimetype: str) -> bool:
+    return is_allowed_declared_mimetype(
+        mimetype,
+        allowed_categories={"image", "video", "audio"},
+    )
 
 
 def _build_media_url(object_name: str) -> str:
@@ -174,11 +167,11 @@ def _store_locally(stream, username: str, extension: str) -> str:
 
 
 def _attachment_type_from_mimetype(mimetype: str) -> str:
-    if mimetype in ALLOWED_IMAGE_MIME_TYPES:
+    if mimetype.startswith("image/"):
         return "image"
-    if mimetype in ALLOWED_VIDEO_MIME_TYPES:
+    if mimetype.startswith("video/"):
         return "video"
-    if mimetype in ALLOWED_AUDIO_MIME_TYPES:
+    if mimetype.startswith("audio/"):
         return "voice"
     raise ValueError(f"Unsupported attachment type: {mimetype}")
 
@@ -254,12 +247,7 @@ def upload_message_attachment(username: str, file_storage, upload_scope: str = "
         )
         raise ValueError("Attachment file is required")
 
-    mimetype = (
-        (getattr(file_storage, "mimetype", "") or "")
-        .split(";", 1)[0]
-        .strip()
-        .lower()
-    )
+    mimetype = _normalize_mimetype(getattr(file_storage, "mimetype", ""))
     if not mimetype:
         _log_attachment_upload(
             level="warning",
@@ -270,7 +258,8 @@ def upload_message_attachment(username: str, file_storage, upload_scope: str = "
         )
         raise ValueError("Attachment mime type is required")
 
-    if mimetype not in ALL_ALLOWED_MIME_TYPES:
+    if not _is_supported_media_mimetype(mimetype):
+        reason = "blocked_for_security" if _is_blocked_media_mimetype(mimetype) else "unsupported_category"
         _log_attachment_upload(
             level="warning",
             event="rejected_unsupported_mime",
@@ -278,8 +267,36 @@ def upload_message_attachment(username: str, file_storage, upload_scope: str = "
             upload_scope=upload_scope,
             mimetype=mimetype,
             duration_ms=elapsed_ms(),
+            reason=reason,
         )
         raise ValueError(f"Unsupported attachment type: {mimetype}")
+
+    if bool(current_app.config.get("MEDIA_CONTENT_SNIFFING_ENABLED", True)):
+        content_validation_error = validate_upload_content(
+            file_storage,
+            mimetype,
+            allowed_categories={"image", "video", "audio"},
+            reject_active_text_payloads=bool(
+                current_app.config.get("MEDIA_CONTENT_REJECT_ACTIVE_TEXT", True)
+            ),
+            enforce_declared_category_match=bool(
+                current_app.config.get("MEDIA_CONTENT_ENFORCE_CATEGORY_MATCH", True)
+            ),
+            sniff_bytes=int(current_app.config.get("MEDIA_CONTENT_SNIFF_BYTES", 2048)),
+        )
+        if content_validation_error is not None:
+            _log_attachment_upload(
+                level="warning",
+                event="rejected_invalid_content",
+                username=username,
+                upload_scope=upload_scope,
+                mimetype=mimetype,
+                duration_ms=elapsed_ms(),
+                reason=content_validation_error,
+            )
+            if content_validation_error in {"unsupported_declared_type", "unsupported_detected_type"}:
+                raise ValueError(f"Unsupported attachment type: {mimetype}")
+            raise ValueError("Invalid attachment content for declared type")
 
     attachment_type = _attachment_type_from_mimetype(mimetype)
     max_size = _max_size_for_type(attachment_type)
@@ -710,12 +727,28 @@ def mark_private_message_deleted(username, chat_id, message_id):
     return message_repository.mark_private_message_deleted(username, chat_id, message_id)
 
 
+def mark_private_message_deleted_for_user(username, chat_id, message_id):
+    return message_repository.mark_private_message_deleted_for_user(
+        username=username,
+        chat_id=chat_id,
+        message_id=message_id,
+    )
+
+
 def get_private_deleted_message_ids(username, chat_id, message_ids):
     return message_repository.get_private_deleted_message_ids(username, chat_id, message_ids)
 
 
 def mark_group_message_deleted(username, group_id, message_id):
     return message_repository.mark_group_message_deleted(username, group_id, message_id)
+
+
+def mark_group_message_deleted_for_user(username, group_id, message_id):
+    return message_repository.mark_group_message_deleted_for_user(
+        username=username,
+        group_id=group_id,
+        message_id=message_id,
+    )
 
 
 def get_group_deleted_message_ids(username, group_id, message_ids):

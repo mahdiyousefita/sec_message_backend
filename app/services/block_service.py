@@ -114,7 +114,9 @@ def get_blocked_users_page(
                 "id": user["id"],
                 "username": user["username"],
                 "name": user["name"],
+                "badge": user.get("badge"),
                 "profile_image_url": _build_media_url(user["image_object_name"]),
+                "profile_image_shape": user.get("profile_image_shape", "circle"),
             }
         )
 

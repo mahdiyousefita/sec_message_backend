@@ -120,6 +120,52 @@ class GroupMessageRecipient(db.Model):
     )
 
 
+class PrivateMessageUserDelete(db.Model):
+    __tablename__ = "private_message_user_deletes"
+
+    id = db.Column(db.Integer, primary_key=True)
+    message_id = db.Column(db.String(64), nullable=False, index=True)
+    username = db.Column(db.String(80), nullable=False, index=True)
+    deleted_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, index=True)
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            "message_id",
+            "username",
+            name="uq_private_message_user_delete",
+        ),
+        db.Index(
+            "ix_private_message_user_delete_lookup",
+            "username",
+            "message_id",
+        ),
+    )
+
+
+class GroupMessageUserDelete(db.Model):
+    __tablename__ = "group_message_user_deletes"
+
+    id = db.Column(db.Integer, primary_key=True)
+    message_id = db.Column(db.String(64), nullable=False, index=True)
+    group_id = db.Column(db.Integer, nullable=False, index=True)
+    username = db.Column(db.String(80), nullable=False, index=True)
+    deleted_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, index=True)
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            "message_id",
+            "username",
+            name="uq_group_message_user_delete",
+        ),
+        db.Index(
+            "ix_group_message_user_delete_lookup",
+            "group_id",
+            "username",
+            "message_id",
+        ),
+    )
+
+
 class GroupMessageKeyRecipient(db.Model):
     __tablename__ = "group_message_key_recipients"
 

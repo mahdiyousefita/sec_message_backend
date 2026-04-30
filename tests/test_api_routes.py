@@ -56,6 +56,7 @@ class TestApiRoutes(unittest.TestCase):
 
     def setUp(self):
         with self.app.app_context():
+            self.auth_service.reset_login_rate_limit_state()
             self.db.drop_all()
             self.db.create_all()
         self.socket_events._user_sids.clear()
@@ -119,6 +120,80 @@ class TestApiRoutes(unittest.TestCase):
         self.assertIn("access_token", body)
         self.assertIn("refresh_token", body)
 
+    def test_register_stores_argon2id_password_hash(self):
+        register_response = self.client.post(
+            "/api/auth/register",
+            json={
+                "username": "secure_user",
+                "password": "pass123",
+                "public_key": "secure_user_pub",
+            },
+        )
+        self.assertEqual(register_response.status_code, 201)
+
+        with self.app.app_context():
+            from app.models.user_model import User
+            from app.services.password_security import is_argon2_hash
+
+            user = User.query.filter_by(username="secure_user").first()
+            self.assertIsNotNone(user)
+            self.assertTrue(is_argon2_hash(user.password_hash))
+
+    def test_login_migrates_legacy_plaintext_password_hash(self):
+        self._register("legacy_user")
+
+        with self.app.app_context():
+            from app.models.user_model import User
+            from app.services.password_security import is_argon2_hash
+
+            user = User.query.filter_by(username="legacy_user").first()
+            self.assertIsNotNone(user)
+            user.password_hash = "pass123"
+            self.db.session.commit()
+            self.assertFalse(is_argon2_hash(user.password_hash))
+
+        login_response = self.client.post(
+            "/api/auth/login",
+            json={"username": "legacy_user", "password": "pass123"},
+        )
+        self.assertEqual(login_response.status_code, 200)
+
+        with self.app.app_context():
+            from app.models.user_model import User
+            from app.services.password_security import is_argon2_hash
+
+            migrated_user = User.query.filter_by(username="legacy_user").first()
+            self.assertIsNotNone(migrated_user)
+            self.assertTrue(is_argon2_hash(migrated_user.password_hash))
+
+    def test_admin_login_migrates_legacy_plaintext_password_hash(self):
+        self._register("admin")
+        self._make_admin("admin")
+
+        with self.app.app_context():
+            from app.models.user_model import User
+            from app.services.password_security import is_argon2_hash
+
+            admin_user = User.query.filter_by(username="admin").first()
+            self.assertIsNotNone(admin_user)
+            admin_user.password_hash = "pass123"
+            self.db.session.commit()
+            self.assertFalse(is_argon2_hash(admin_user.password_hash))
+
+        admin_login = self.client.post(
+            "/admin/api/login",
+            json={"username": "admin", "password": "pass123"},
+        )
+        self.assertEqual(admin_login.status_code, 200)
+
+        with self.app.app_context():
+            from app.models.user_model import User
+            from app.services.password_security import is_argon2_hash
+
+            admin_user = User.query.filter_by(username="admin").first()
+            self.assertIsNotNone(admin_user)
+            self.assertTrue(is_argon2_hash(admin_user.password_hash))
+
     def test_auth_key_status_reports_server_public_key_presence(self):
         self._register("alice", public_key="alice_key")
         headers = self._auth_header("alice")
@@ -169,6 +244,38 @@ class TestApiRoutes(unittest.TestCase):
 
         response = self.client.post("/api/auth/token", headers=headers)
         self.assertEqual(response.status_code, 422)
+
+    def test_auth_login_rate_limit_blocks_repeated_failures(self):
+        self._register("alice")
+        original_limit = self.app.config.get("AUTH_LOGIN_RATE_LIMIT_MAX_ATTEMPTS")
+        original_window = self.app.config.get("AUTH_LOGIN_RATE_LIMIT_WINDOW_SECONDS")
+        original_lockout = self.app.config.get("AUTH_LOGIN_RATE_LIMIT_LOCKOUT_SECONDS")
+        try:
+            self.app.config["AUTH_LOGIN_RATE_LIMIT_MAX_ATTEMPTS"] = 2
+            self.app.config["AUTH_LOGIN_RATE_LIMIT_WINDOW_SECONDS"] = 60
+            self.app.config["AUTH_LOGIN_RATE_LIMIT_LOCKOUT_SECONDS"] = 60
+
+            first = self.client.post(
+                "/api/auth/login",
+                json={"username": "alice", "password": "wrong-pass"},
+            )
+            self.assertEqual(first.status_code, 401)
+
+            second = self.client.post(
+                "/api/auth/login",
+                json={"username": "alice", "password": "wrong-pass"},
+            )
+            self.assertEqual(second.status_code, 401)
+
+            third = self.client.post(
+                "/api/auth/login",
+                json={"username": "alice", "password": "wrong-pass"},
+            )
+            self.assertEqual(third.status_code, 429)
+        finally:
+            self.app.config["AUTH_LOGIN_RATE_LIMIT_MAX_ATTEMPTS"] = original_limit
+            self.app.config["AUTH_LOGIN_RATE_LIMIT_WINDOW_SECONDS"] = original_window
+            self.app.config["AUTH_LOGIN_RATE_LIMIT_LOCKOUT_SECONDS"] = original_lockout
 
     def test_auth_logout_returns_success(self):
         response = self.client.post("/api/auth/logout")
@@ -229,6 +336,114 @@ class TestApiRoutes(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.get_json()["error"], "Username already exists")
 
+    def test_admin_can_assign_and_clear_user_badge(self):
+        self._register("admin")
+        self._register("alice")
+        self._make_admin("admin")
+        admin_headers = self._auth_header("admin")
+        alice_id = self._user_id("alice")
+
+        assign_response = self.client.patch(
+            f"/admin/api/users/{alice_id}/badge",
+            headers=admin_headers,
+            json={"badge": "verified"},
+        )
+        self.assertEqual(assign_response.status_code, 200)
+        assign_payload = assign_response.get_json()
+        self.assertEqual(assign_payload["user"]["badge"], "verified")
+
+        users_response = self.client.get(
+            "/admin/api/users",
+            headers=admin_headers,
+            query_string={"q": "alice"},
+        )
+        self.assertEqual(users_response.status_code, 200)
+        users_payload = users_response.get_json()
+        self.assertEqual(users_payload["users"][0]["badge"], "verified")
+
+        clear_response = self.client.patch(
+            f"/admin/api/users/{alice_id}/badge",
+            headers=admin_headers,
+            json={"badge": "   "},
+        )
+        self.assertEqual(clear_response.status_code, 200)
+        self.assertIsNone(clear_response.get_json()["user"]["badge"])
+
+    def test_admin_update_user_badge_rejects_invalid_payload(self):
+        self._register("admin")
+        self._register("alice")
+        self._make_admin("admin")
+        admin_headers = self._auth_header("admin")
+        alice_id = self._user_id("alice")
+
+        missing_field_response = self.client.patch(
+            f"/admin/api/users/{alice_id}/badge",
+            headers=admin_headers,
+            json={"title": "vip"},
+        )
+        self.assertEqual(missing_field_response.status_code, 400)
+        self.assertEqual(
+            missing_field_response.get_json()["error"],
+            "Field 'badge' is required",
+        )
+
+        non_string_response = self.client.patch(
+            f"/admin/api/users/{alice_id}/badge",
+            headers=admin_headers,
+            json={"badge": 123},
+        )
+        self.assertEqual(non_string_response.status_code, 400)
+        self.assertEqual(non_string_response.get_json()["error"], "Badge must be a string")
+
+        unknown_badge_response = self.client.patch(
+            f"/admin/api/users/{alice_id}/badge",
+            headers=admin_headers,
+            json={"badge": "vip"},
+        )
+        self.assertEqual(unknown_badge_response.status_code, 400)
+        self.assertEqual(
+            unknown_badge_response.get_json()["error"],
+            "Badge is not in the allowed catalog",
+        )
+
+    def test_admin_badge_catalog_endpoint_returns_allowed_values(self):
+        self._register("admin")
+        self._make_admin("admin")
+        admin_headers = self._auth_header("admin")
+
+        response = self.client.get("/admin/api/badges", headers=admin_headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.get_json()["badges"],
+            ["verified", "moderator", "staff"],
+        )
+
+    def test_profile_and_search_include_user_badge(self):
+        self._register("admin")
+        self._register("alice")
+        self._make_admin("admin")
+        admin_headers = self._auth_header("admin")
+        alice_id = self._user_id("alice")
+
+        set_badge = self.client.patch(
+            f"/admin/api/users/{alice_id}/badge",
+            headers=admin_headers,
+            json={"badge": "verified"},
+        )
+        self.assertEqual(set_badge.status_code, 200)
+
+        profile_response = self.client.get("/api/profiles/alice")
+        self.assertEqual(profile_response.status_code, 200)
+        self.assertEqual(profile_response.get_json()["badge"], "verified")
+        self.assertEqual(profile_response.get_json()["profile_image_shape"], "circle")
+
+        search_response = self.client.get("/api/search/users?q=alice")
+        self.assertEqual(search_response.status_code, 200)
+        self.assertEqual(search_response.get_json()["users"][0]["badge"], "verified")
+        self.assertEqual(
+            search_response.get_json()["users"][0]["profile_image_shape"], "circle"
+        )
+
     def test_admin_can_manage_app_update_settings(self):
         self._register("admin")
         self._make_admin("admin")
@@ -272,6 +487,77 @@ class TestApiRoutes(unittest.TestCase):
             "Please update now.",
         )
 
+    def test_admin_can_manage_about_us_settings_and_public_can_read(self):
+        self._register("admin")
+        self._register("alice")
+        self._register("bob")
+        self._make_admin("admin")
+        admin_headers = self._auth_header("admin")
+
+        patch_response = self.client.patch(
+            "/admin/api/about-us",
+            headers=admin_headers,
+            json={
+                "description": "Built by the Dino core team.",
+                "links": {
+                    "website": {
+                        "title": "Official site",
+                        "url": "https://example.com",
+                        "is_disabled": False,
+                    },
+                    "source_code": {
+                        "title": "Source code",
+                        "url": "https://github.com/example/dino",
+                        "is_disabled": True,
+                    },
+                    "email": {
+                        "title": "Email support",
+                        "url": "support@example.com",
+                        "is_disabled": False,
+                    },
+                },
+                "team_members": [
+                    {"username": "alice", "custom_name": "Mahdi", "role": "Android engineer"},
+                    {"username": "bob", "role": "Backend engineer"},
+                ],
+            },
+        )
+        self.assertEqual(patch_response.status_code, 200)
+        patched = patch_response.get_json()["about_us"]
+        self.assertEqual(patched["description"], "Built by the Dino core team.")
+        self.assertEqual(patched["links"]["website"]["title"], "Official site")
+        self.assertTrue(patched["links"]["source_code"]["is_disabled"])
+        self.assertEqual(len(patched["team_members"]), 2)
+        self.assertEqual(patched["team_members"][0]["name"], "Mahdi")
+        self.assertEqual(patched["team_members"][0]["custom_name"], "Mahdi")
+
+        public_response = self.client.get("/api/about-us")
+        self.assertEqual(public_response.status_code, 200)
+        public_payload = public_response.get_json()
+        self.assertEqual(public_payload["description"], "Built by the Dino core team.")
+        self.assertEqual(len(public_payload["links"]), 3)
+        team_usernames = [row["username"] for row in public_payload["team_members"]]
+        self.assertListEqual(team_usernames, ["alice", "bob"])
+        self.assertEqual(public_payload["team_members"][0]["name"], "Mahdi")
+        self.assertEqual(public_payload["team_members"][0]["role"], "Android engineer")
+
+    def test_admin_about_us_rejects_unknown_usernames(self):
+        self._register("admin")
+        self._make_admin("admin")
+        admin_headers = self._auth_header("admin")
+
+        response = self.client.patch(
+            "/admin/api/about-us",
+            headers=admin_headers,
+            json={
+                "team_members": [
+                    {"username": "ghost_user", "role": "Moderator"},
+                ],
+            },
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Unknown usernames", response.get_json()["error"])
+
     def test_admin_online_users_endpoint_lists_current_online_users(self):
         self._register("admin")
         self._register("alice")
@@ -294,6 +580,7 @@ class TestApiRoutes(unittest.TestCase):
         )
         self.assertTrue(all("id" in user for user in payload["users"]))
         self.assertTrue(all("name" in user for user in payload["users"]))
+        self.assertTrue(all("badge" in user for user in payload["users"]))
 
     def test_admin_recently_online_users_endpoint_resets_entries_older_than_24_hours(self):
         self._register("admin")
@@ -317,6 +604,7 @@ class TestApiRoutes(unittest.TestCase):
             [user["username"] for user in payload["users"]],
             ["alice", "charlie"],
         )
+        self.assertTrue(all("badge" in user for user in payload["users"]))
         self.assertIsNone(
             self.fake_redis.zscore(
                 self.socket_events.PRESENCE_RECENTLY_ONLINE_KEY,
@@ -982,6 +1270,23 @@ class TestApiRoutes(unittest.TestCase):
         self.assertEqual(list_resp.status_code, 200)
         media_url = list_resp.get_json()["posts"][0]["media"][0]["url"]
         self.assertIn("/media/posts/", media_url)
+
+    def test_create_post_rejects_svg_payload_disguised_as_png(self):
+        self._register("alice")
+        headers = self._auth_header("alice")
+
+        response = self.client.post(
+            "/api/posts",
+            data={
+                "text": "bad payload",
+                "media": (io.BytesIO(b"<svg xmlns='http://www.w3.org/2000/svg'></svg>"), "x.png", "image/png"),
+            },
+            headers=headers,
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Invalid media content", response.get_json()["error"])
 
     def test_create_music_post_allows_empty_text_and_returns_track_metadata(self):
         self._register("alice")
@@ -1663,6 +1968,17 @@ class TestApiRoutes(unittest.TestCase):
         )
         self.assertEqual(comment_resp.status_code, 201)
         self.assertGreater(len(long_comment), 120)
+        with self.app.app_context():
+            from app.models.profile_model import Profile
+            from app.models.user_model import User
+
+            actor_user = User.query.filter_by(username="bob").first()
+            self.assertIsNotNone(actor_user)
+            actor_user.badge = "verified"
+            actor_profile = Profile.query.filter_by(user_id=actor_user.id).first()
+            self.assertIsNotNone(actor_profile)
+            actor_profile.profile_image_shape = "pill"
+            self.db.session.commit()
 
         notifications_resp = self.client.get(
             "/api/activity-notifications?page=1&limit=20",
@@ -1673,6 +1989,8 @@ class TestApiRoutes(unittest.TestCase):
         self.assertEqual(payload["total"], 1)
         notification = payload["notifications"][0]
         self.assertEqual(notification["kind"], "comment")
+        self.assertEqual(notification["actor"]["badge"], "verified")
+        self.assertEqual(notification["actor"]["profile_image_shape"], "pill")
         self.assertEqual(notification["extra"]["comment_preview"], long_comment)
 
     def test_activity_notification_comment_reply_uses_full_reply_text(self):
@@ -2680,6 +2998,58 @@ class TestApiRoutes(unittest.TestCase):
         me_payload = get_me.get_json()
         self.assertEqual(me_payload["name"], "Alice Wonder")
         self.assertEqual(me_payload["bio"], "Bio text")
+        self.assertEqual(me_payload["profile_image_shape"], "circle")
+
+    def test_profile_shape_update_requires_badge(self):
+        self._register("alice")
+        headers = self._auth_header("alice")
+
+        without_badge = self.client.put(
+            "/api/profiles/me",
+            json={"profile_image_shape": "pill"},
+            headers=headers,
+        )
+        self.assertEqual(without_badge.status_code, 400)
+        self.assertIn(
+            "available only for users with a badge",
+            without_badge.get_json()["error"],
+        )
+
+        with self.app.app_context():
+            from app.models.user_model import User
+
+            user = User.query.filter_by(username="alice").first()
+            self.assertIsNotNone(user)
+            user.badge = "verified"
+            self.db.session.commit()
+
+        with_badge = self.client.put(
+            "/api/profiles/me",
+            json={"profile_image_shape": "pill"},
+            headers=headers,
+        )
+        self.assertEqual(with_badge.status_code, 200)
+        self.assertEqual(with_badge.get_json()["profile_image_shape"], "pill")
+
+    def test_profile_shape_update_rejects_invalid_shape(self):
+        self._register("alice")
+        headers = self._auth_header("alice")
+
+        with self.app.app_context():
+            from app.models.user_model import User
+
+            user = User.query.filter_by(username="alice").first()
+            self.assertIsNotNone(user)
+            user.badge = "verified"
+            self.db.session.commit()
+
+        response = self.client.put(
+            "/api/profiles/me",
+            json={"profile_image_shape": "triangle"},
+            headers=headers,
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Unsupported profile image shape", response.get_json()["error"])
 
     def test_delete_my_account_removes_user_data(self):
         self._register("alice")
@@ -2928,6 +3298,48 @@ class TestApiRoutes(unittest.TestCase):
         self.assertIsNone(bob_payload["posts"][0]["author"]["profile_image_url"])
         self.assertEqual(bob_payload["posts"][0]["viewer_vote"], 0)
 
+    def test_profile_posts_pagination_normalizes_page_and_stable_sort(self):
+        self._register("alice")
+        alice_headers = self._auth_header("alice")
+
+        created_ids = []
+        for index in range(5):
+            response = self.client.post(
+                "/api/posts",
+                json={"text": f"alice post {index}"},
+                headers=alice_headers,
+            )
+            self.assertEqual(response.status_code, 201)
+            created_ids.append(response.get_json()["post_id"])
+
+        with self.app.app_context():
+            from app.models.post_model import Post
+
+            # Force identical timestamps so deterministic id tiebreaker is required.
+            shared_created_at = datetime(2024, 1, 1, 0, 0, 0)
+            Post.query.update({"created_at": shared_created_at})
+            self.db.session.commit()
+
+        first_page_with_zero = self.client.get("/api/profiles/alice/posts?page=0&limit=2")
+        self.assertEqual(first_page_with_zero.status_code, 200)
+        first_payload = first_page_with_zero.get_json()
+        self.assertEqual(first_payload["page"], 1)
+        first_ids = [post["id"] for post in first_payload["posts"]]
+        self.assertEqual(first_ids, [5, 4])
+
+        second_page = self.client.get("/api/profiles/alice/posts?page=2&limit=2")
+        self.assertEqual(second_page.status_code, 200)
+        second_ids = [post["id"] for post in second_page.get_json()["posts"]]
+        self.assertEqual(second_ids, [3, 2])
+
+        third_page = self.client.get("/api/profiles/alice/posts?page=3&limit=2")
+        self.assertEqual(third_page.status_code, 200)
+        third_ids = [post["id"] for post in third_page.get_json()["posts"]]
+        self.assertEqual(third_ids, [1])
+
+        all_loaded = first_ids + second_ids + third_ids
+        self.assertEqual(sorted(all_loaded), sorted(created_ids))
+
     def test_posts_endpoints_include_viewer_vote_when_authenticated(self):
         self._register("alice")
         self._register("bob")
@@ -2978,6 +3390,34 @@ class TestApiRoutes(unittest.TestCase):
         )
         self.assertEqual(search_all.status_code, 200)
         self.assertEqual(search_all.get_json()["posts"][0]["viewer_vote"], 1)
+
+    def test_report_types_include_copyright(self):
+        response = self.client.get("/api/report-types")
+
+        self.assertEqual(response.status_code, 200)
+        report_types = response.get_json()["report_types"]
+        self.assertIn("copyright", report_types)
+
+    def test_report_post_accepts_copyright_report_type(self):
+        self._register("alice")
+        self._register("bob")
+        alice_headers = self._auth_header("alice")
+        bob_headers = self._auth_header("bob")
+
+        create_post = self.client.post(
+            "/api/posts",
+            json={"text": "possible copyright issue"},
+            headers=bob_headers,
+        )
+        self.assertEqual(create_post.status_code, 201)
+        post_id = create_post.get_json()["post_id"]
+
+        report_resp = self.client.post(
+            f"/api/posts/{post_id}/reports",
+            json={"report_type": "copyright"},
+            headers=alice_headers,
+        )
+        self.assertEqual(report_resp.status_code, 201)
 
     def test_report_post_and_handle_delete_post_hides_post(self):
         self._register("alice")
@@ -3455,6 +3895,57 @@ class TestApiRoutes(unittest.TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn("Unsupported attachment type", response.get_json()["error"])
+
+    def test_message_attachment_upload_accepts_heic_image(self):
+        self._register("alice")
+        headers = self._auth_header("alice")
+
+        class FakeMinio:
+            def bucket_exists(self, *args, **kwargs):
+                return True
+
+            def put_object(self, **kwargs):
+                return None
+
+        with patch("app.services.message_service.get_minio_client", return_value=FakeMinio()):
+            response = self.client.post(
+                "/api/messages/attachments",
+                data={"file": (io.BytesIO(b"fake-heic"), "photo.heic", "image/heic")},
+                headers=headers,
+                content_type="multipart/form-data",
+            )
+
+        self.assertEqual(response.status_code, 201)
+        body = response.get_json()["attachment"]
+        self.assertEqual(body["mime_type"], "image/heic")
+
+    def test_message_attachment_upload_rejects_svg_for_security(self):
+        self._register("alice")
+        headers = self._auth_header("alice")
+
+        response = self.client.post(
+            "/api/messages/attachments",
+            data={"file": (io.BytesIO(b"<svg></svg>"), "image.svg", "image/svg+xml")},
+            headers=headers,
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Unsupported attachment type", response.get_json()["error"])
+
+    def test_message_attachment_upload_rejects_svg_payload_disguised_as_png(self):
+        self._register("alice")
+        headers = self._auth_header("alice")
+
+        response = self.client.post(
+            "/api/messages/attachments",
+            data={"file": (io.BytesIO(b"<svg xmlns='http://www.w3.org/2000/svg'></svg>"), "x.png", "image/png")},
+            headers=headers,
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Invalid attachment content", response.get_json()["error"])
 
     def test_message_attachment_upload_accepts_mime_with_parameters(self):
         self._register("alice")

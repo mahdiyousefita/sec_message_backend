@@ -7,7 +7,6 @@ from flask_jwt_extended import (
     get_jwt_identity,
     verify_jwt_in_request,
 )
-from werkzeug.security import check_password_hash, generate_password_hash
 
 from app.db import db
 from app.models.user_model import User
@@ -20,7 +19,9 @@ from app.models.vote_model import Vote
 from app.models.follow_model import Follow
 from app.services import report_service
 from app.services import app_update_service
+from app.services import about_us_service
 from app.services import crash_log_service
+from app.services import auth_service
 from app.services.post_service import _build_media_url
 
 admin_bp = Blueprint(
@@ -28,6 +29,12 @@ admin_bp = Blueprint(
     __name__,
     template_folder="../templates",
 )
+
+USER_BADGE_CATALOG = [
+    "verified",
+    "moderator",
+    "staff",
+]
 
 
 def _is_admin(user_id):
@@ -46,6 +53,22 @@ def admin_required(fn):
             return jsonify({"error": "Forbidden"}), 403
         return fn(*args, **kwargs)
     return wrapper
+
+
+def _normalize_badge_value(raw_badge):
+    if raw_badge is None:
+        return None
+    if not isinstance(raw_badge, str):
+        raise ValueError("Badge must be a string")
+
+    badge = raw_badge.strip()
+    if not badge:
+        return None
+    if len(badge) > 64:
+        raise ValueError("Badge must be 64 characters or fewer")
+    if badge not in USER_BADGE_CATALOG:
+        raise ValueError("Badge is not in the allowed catalog")
+    return badge
 
 
 # ── Pages ────────────────────────────────────────────────────────────
@@ -74,9 +97,11 @@ def admin_login():
     if not username or not password:
         return jsonify({"error": "Invalid credentials"}), 401
 
-    user = User.query.filter_by(username=username).first()
-    if not user or not check_password_hash(user.password_hash, password):
-        return jsonify({"error": "Invalid credentials"}), 401
+    try:
+        user = auth_service.authenticate_user_credentials(username, password)
+    except ValueError as e:
+        status_code = getattr(e, "status_code", 401)
+        return jsonify({"error": str(e)}), status_code
 
     if not _is_admin(user.id):
         return jsonify({"error": "Access denied – not an admin"}), 403
@@ -90,6 +115,12 @@ def admin_login():
 def admin_me():
     username = get_jwt_identity()
     return jsonify({"username": username}), 200
+
+
+@admin_bp.route("/api/badges", methods=["GET"])
+@admin_required
+def admin_list_badges():
+    return jsonify({"badges": USER_BADGE_CATALOG}), 200
 
 
 # ── App update settings ─────────────────────────────────────────────
@@ -114,6 +145,26 @@ def admin_update_app_update_settings():
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     return jsonify({"message": "Settings updated", "settings": settings}), 200
+
+
+# ── About us settings ───────────────────────────────────────────────
+
+@admin_bp.route("/api/about-us", methods=["GET"])
+@admin_required
+def admin_get_about_us():
+    payload = about_us_service.get_admin_about_us()
+    return jsonify({"about_us": payload}), 200
+
+
+@admin_bp.route("/api/about-us", methods=["PATCH"])
+@admin_required
+def admin_update_about_us():
+    data = request.get_json(silent=True)
+    try:
+        payload = about_us_service.update_about_us(data)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"message": "About Us updated", "about_us": payload}), 200
 
 
 # ── Crash logs + mappings ───────────────────────────────────────────
@@ -238,6 +289,7 @@ def admin_search_users():
             "username": u.username,
             "is_admin": u.id in admin_ids,
             "name": prof.name if prof else u.username,
+            "badge": u.badge,
         })
 
     return jsonify({"users": result, "total": total, "page": page, "limit": limit}), 200
@@ -296,6 +348,7 @@ def _build_admin_user_payload(usernames):
                 "username": user.username,
                 "name": profile.name if profile else user.username,
                 "is_admin": user.id in admin_ids,
+                "badge": user.badge,
             }
         )
 
@@ -578,6 +631,47 @@ def admin_demote_user(user_id):
     return jsonify({"message": f"{user.username} is no longer an admin"}), 200
 
 
+# ── Assign / clear user badge ───────────────────────────────────────
+
+@admin_bp.route("/api/users/<int:user_id>/badge", methods=["PATCH"])
+@admin_required
+def admin_update_user_badge(user_id):
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "Invalid JSON body"}), 400
+
+    if "badge" not in data:
+        return jsonify({"error": "Field 'badge' is required"}), 400
+
+    try:
+        normalized_badge = _normalize_badge_value(data.get("badge"))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+    user.badge = normalized_badge
+    db.session.commit()
+
+    if normalized_badge:
+        message = f"Badge '{normalized_badge}' assigned to {user.username}"
+    else:
+        message = f"Badge cleared for {user.username}"
+
+    return jsonify(
+        {
+            "message": message,
+            "user": {
+                "id": user.id,
+                "username": user.username,
+                "badge": user.badge,
+            },
+        }
+    ), 200
+
+
 # ── Update user credentials ─────────────────────────────────────────
 
 @admin_bp.route("/api/users/<int:user_id>/credentials", methods=["PATCH"])
@@ -616,7 +710,11 @@ def admin_update_user_credentials(user_id):
         if not isinstance(incoming_password, str) or not incoming_password.strip():
             return jsonify({"error": "Password must be a non-empty string"}), 400
 
-        user.password_hash = generate_password_hash(incoming_password)
+        try:
+            user.password_hash = auth_service.hash_password_for_storage(incoming_password)
+        except ValueError as e:
+            status_code = getattr(e, "status_code", 400)
+            return jsonify({"error": str(e)}), status_code
         changed_fields.append("password")
 
     if not changed_fields:

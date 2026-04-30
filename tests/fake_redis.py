@@ -1,4 +1,5 @@
 from __future__ import annotations
+import fnmatch
 
 
 class FakePipeline:
@@ -45,6 +46,14 @@ class FakeRedis:
 
     def _all_keys(self):
         return set(self._sets) | set(self._lists) | set(self._hashes) | set(self._sorted_sets) | set(self._strings)
+
+    def keys(self, pattern="*"):
+        return [key for key in self._all_keys() if fnmatch.fnmatch(str(key), pattern)]
+
+    def scan_iter(self, match=None):
+        pattern = match or "*"
+        for key in self.keys(pattern):
+            yield key
 
     def delete(self, *keys):
         removed = 0
@@ -242,6 +251,30 @@ class FakeRedis:
                 del zset[member]
                 removed += 1
         return removed
+
+    def zremrangebyscore(self, key, min_score, max_score):
+        zset = self._sorted_sets.get(key, {})
+        if not zset:
+            return 0
+
+        def _to_bound(value, default):
+            if isinstance(value, str):
+                text = value.strip().lower()
+                if text == "-inf":
+                    return float("-inf")
+                if text == "+inf":
+                    return float("inf")
+            if value is None:
+                return default
+            return float(value)
+
+        low = _to_bound(min_score, float("-inf"))
+        high = _to_bound(max_score, float("inf"))
+
+        to_remove = [member for member, score in zset.items() if low <= float(score) <= high]
+        for member in to_remove:
+            del zset[member]
+        return len(to_remove)
 
     def zcard(self, key):
         return len(self._sorted_sets.get(key, {}))

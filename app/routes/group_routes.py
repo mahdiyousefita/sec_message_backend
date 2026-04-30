@@ -9,7 +9,11 @@ from app.services.group_service import (
     NotGroupCreatorError,
 )
 from app.services import message_service
-from app.socket_events import emit_group_event_to_members, evict_user_from_group_room
+from app.socket_events import (
+    emit_group_event_to_members,
+    evict_user_from_group_room,
+    get_group_online_users_payload,
+)
 
 group_bp = Blueprint("groups", __name__)
 
@@ -85,6 +89,24 @@ def list_group_members(group_id):
         return jsonify({"error": str(exc)}), 403
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 404
+
+
+@group_bp.route("/<int:group_id>/online-users", methods=["GET"])
+@jwt_required()
+def get_group_online_users(group_id):
+    username = get_jwt_identity()
+    try:
+        # Reuse group detail auth checks to ensure the requester belongs to this group.
+        group_service.get_group_detail(username, group_id)
+    except NotGroupMemberError as exc:
+        return jsonify({"error": str(exc)}), 403
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 404
+
+    payload = get_group_online_users_payload(group_id)
+    if payload is None:
+        return jsonify({"error": "Failed to load group online users"}), 500
+    return jsonify(payload), 200
 
 
 @group_bp.route("/<int:group_id>/members", methods=["POST"])

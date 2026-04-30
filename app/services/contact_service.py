@@ -95,7 +95,13 @@ def _build_contact_items(contact_usernames, unread_summary):
         result.append({
             "username": contact_username,
             "name": profile.name if profile else None,
+            "badge": user.badge if user else None,
             "profile_image_url": _build_media_url(profile.image_object_name) if profile and profile.image_object_name else None,
+            "profile_image_shape": (
+                profile.profile_image_shape
+                if profile and profile.profile_image_shape
+                else "circle"
+            ),
             "profile_video_url": _build_media_url(profile_video.video_object_name) if profile_video and profile_video.video_object_name else None,
             "has_message": has_message,
             "online": bool(online_status.get(contact_username, False)),
@@ -233,6 +239,7 @@ def get_contacts_with_message_status(username, page=1, limit=DEFAULT_CONTACTS_LI
                 "id": grp.creator_id,
                 "username": creator_username,
                 "name": creator_name,
+                "badge": grp.creator.badge if grp.creator else None,
             },
             "member_count": int(member_count_by_group_id.get(grp.id, 0)),
             "created_at": grp.created_at.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),

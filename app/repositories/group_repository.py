@@ -159,8 +159,10 @@ def get_group_members(group_id: int):
         db.session.query(
             User.id,
             User.username,
+            User.badge,
             Profile.name,
             Profile.image_object_name,
+            Profile.profile_image_shape,
             User.public_key,
         )
         .join(GroupMember, GroupMember.user_id == User.id)
@@ -174,7 +176,9 @@ def get_group_members(group_id: int):
             "id": row.id,
             "username": row.username,
             "name": row.name or row.username,
+            "badge": row.badge,
             "image_object_name": row.image_object_name,
+            "profile_image_shape": row.profile_image_shape or "circle",
             "public_key": row.public_key,
         }
         for row in rows

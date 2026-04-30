@@ -108,7 +108,9 @@ def get_followers_by_username(username: str, page: int, limit: int):
                 "id": row["id"],
                 "username": row["username"],
                 "name": row["name"],
+                "badge": row.get("badge"),
                 "profile_image_url": _build_profile_image_url(row["image_object_name"]),
+                "profile_image_shape": row.get("profile_image_shape", "circle"),
             }
             for row in users
         ],
@@ -132,7 +134,9 @@ def get_following_page_by_username(username: str, page: int, limit: int):
                 "id": row["id"],
                 "username": row["username"],
                 "name": row["name"],
+                "badge": row.get("badge"),
                 "profile_image_url": _build_profile_image_url(row["image_object_name"]),
+                "profile_image_shape": row.get("profile_image_shape", "circle"),
             }
             for row in users
         ],

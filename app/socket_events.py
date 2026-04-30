@@ -1,4 +1,4 @@
-from flask import current_app, request, session
+from flask import current_app, has_request_context, request, session
 import logging
 import threading
 from datetime import datetime, timedelta, timezone
@@ -79,6 +79,18 @@ def _presence_connection_token(sid):
     if not isinstance(sid, str) or not sid.strip():
         return ""
     return f"{_PROCESS_INSTANCE_ID}:{sid.strip()}"
+
+
+def _build_profile_image_url(image_object_name):
+    if not isinstance(image_object_name, str) or not image_object_name.strip():
+        return None
+    normalized_name = image_object_name.strip()
+    base_url = current_app.config.get("APP_PUBLIC_BASE_URL", "").rstrip("/")
+    if not base_url and has_request_context():
+        base_url = request.url_root.rstrip("/")
+    if normalized_name.startswith("static/"):
+        return f"{base_url}/{normalized_name}" if base_url else f"/{normalized_name}"
+    return f"{base_url}/media/{normalized_name}" if base_url else f"/media/{normalized_name}"
 
 
 def _resolve_positive_int(value, default_value, minimum):
@@ -421,6 +433,130 @@ def get_online_usernames():
     except Exception as exc:
         logger.warning("Failed to fetch online usernames from presence store: %s", exc)
         return []
+
+
+def get_group_online_users_payload(group_id):
+    try:
+        normalized_group_id = int(group_id)
+    except (TypeError, ValueError):
+        return None
+
+    if normalized_group_id <= 0:
+        return None
+
+    try:
+        from app.repositories import group_repository
+
+        members = group_repository.get_group_members(normalized_group_id)
+        usernames = [
+            (member.get("username") or "").strip()
+            for member in members
+            if isinstance(member, dict)
+        ]
+        online_status_by_username = get_users_online_status(usernames)
+        online_users = []
+        for member in members:
+            if not isinstance(member, dict):
+                continue
+            username = (member.get("username") or "").strip()
+            if not username or not online_status_by_username.get(username, False):
+                continue
+
+            online_users.append(
+                {
+                    "user_id": str(member.get("id") or ""),
+                    "username": username,
+                    "badge": member.get("badge"),
+                    "profile_image_url": _build_profile_image_url(
+                        member.get("image_object_name")
+                    ),
+                    "profile_image_shape": member.get("profile_image_shape", "circle"),
+                }
+            )
+
+        return {
+            "group_id": normalized_group_id,
+            "online_users": online_users,
+        }
+    except Exception as exc:
+        logger.warning(
+            "Failed to build group online payload for group_id=%s: %s",
+            group_id,
+            exc,
+        )
+        return None
+
+
+def _emit_group_presence_changed(username, online):
+    normalized_username = _normalize_username(username)
+    if not normalized_username:
+        return
+
+    try:
+        from app.repositories import group_repository, user_repository
+
+        user = user_repository.get_by_username(normalized_username)
+        if not user:
+            return
+        user_payload = _build_group_user_payload(normalized_username)
+        if not user_payload:
+            return
+
+        for group in group_repository.get_groups_for_user(user.id):
+            socketio.emit(
+                "group_presence_changed",
+                {
+                    "group_id": int(group.id),
+                    "online": bool(online),
+                    "user": user_payload,
+                },
+                room=f"group_{group.id}",
+            )
+    except Exception as exc:
+        logger.warning(
+            "Failed to emit group presence update username=%s online=%s: %s",
+            normalized_username,
+            online,
+            exc,
+        )
+
+
+def _build_group_user_payload(username):
+    normalized_username = _normalize_username(username)
+    if not normalized_username:
+        return None
+
+    try:
+        from app.repositories import profile_repository, user_repository
+
+        user = user_repository.get_by_username(normalized_username)
+        if not user:
+            return None
+        profile = profile_repository.get_by_user_id(user.id)
+        return {
+            "user_id": str(user.id),
+            "username": normalized_username,
+            "badge": user.badge,
+            "profile_image_url": _build_profile_image_url(
+                profile.image_object_name if profile else None
+            ),
+            "profile_image_shape": (
+                profile.profile_image_shape if profile and profile.profile_image_shape else "circle"
+            ),
+        }
+    except Exception as exc:
+        logger.warning(
+            "Failed to build group user payload for username=%s: %s",
+            normalized_username,
+            exc,
+        )
+        return {
+            "user_id": "",
+            "username": normalized_username,
+            "badge": None,
+            "profile_image_url": None,
+            "profile_image_shape": "circle",
+        }
 
 
 def _normalize_utc(timestamp):
@@ -869,6 +1005,7 @@ def register_socket_events():
                 {"username": username, "online": True},
                 skip_sid=request.sid,
             )
+            _emit_group_presence_changed(username, True)
 
     @socketio.on("disconnect")
     def handle_disconnect():
@@ -880,6 +1017,7 @@ def register_socket_events():
             became_offline = _set_user_offline(username, request.sid)
             if became_offline:
                 socketio.emit("user_status", {"username": username, "online": False})
+                _emit_group_presence_changed(username, False)
 
     @socketio.on("presence_heartbeat")
     def handle_presence_heartbeat(_data=None):
@@ -907,6 +1045,7 @@ def register_socket_events():
                 {"username": username, "online": True},
                 skip_sid=request.sid,
             )
+            _emit_group_presence_changed(username, True)
 
     @socketio.on("get_user_status")
     def handle_get_user_status(data):
@@ -1475,6 +1614,9 @@ def register_socket_events():
         join_room(room_name)
         _track_group_room_join(request.sid, group_id)
         emit("group_joined", {"group_id": group_id})
+        online_payload = get_group_online_users_payload(group_id)
+        if online_payload is not None:
+            emit("group_online_users", online_payload)
         marked_as_read = _sync_group_read_state(username=username, group_id=group_id)
         emit(
             "group_read_state_synced",
@@ -1484,6 +1626,82 @@ def register_socket_events():
             },
         )
         logger.debug("User %s joined group room %s", username, room_name)
+
+    @socketio.on("get_group_online_users")
+    def handle_get_group_online_users(data):
+        username = session.get("username")
+        if not username:
+            emit("message_error", {"error": "Unauthorized"})
+            return
+
+        if not isinstance(data, dict) or not data.get("group_id"):
+            emit("message_error", {"error": "group_id is required"})
+            return
+
+        group_id = data.get("group_id")
+        try:
+            from app.repositories import group_repository, user_repository
+
+            user = user_repository.get_by_username(username)
+            if not user or not group_repository.is_member(group_id, user.id):
+                emit("message_error", {"error": "You are not a member of this group"})
+                return
+        except Exception as exc:
+            logger.warning(
+                "get_group_online_users membership check failed for %s: %s",
+                username,
+                exc,
+            )
+            emit("message_error", {"error": "Failed to verify group membership"})
+            return
+
+        payload = get_group_online_users_payload(group_id)
+        if payload is None:
+            emit("message_error", {"error": "Failed to load group online users"})
+            return
+        emit("group_online_users", payload)
+
+    @socketio.on("group_typing")
+    def handle_group_typing(data):
+        username = session.get("username")
+        if not username:
+            emit("message_error", {"error": "Unauthorized"})
+            return
+
+        if not isinstance(data, dict) or not data.get("group_id"):
+            emit("message_error", {"error": "group_id is required"})
+            return
+
+        group_id = data.get("group_id")
+        is_typing = bool(data.get("is_typing", True))
+
+        try:
+            from app.repositories import group_repository, user_repository
+
+            user = user_repository.get_by_username(username)
+            if not user or not group_repository.is_member(group_id, user.id):
+                emit("message_error", {"error": "You are not a member of this group"})
+                return
+        except Exception as exc:
+            logger.warning("group_typing membership check failed for %s: %s", username, exc)
+            emit("message_error", {"error": "Failed to verify group membership"})
+            return
+
+        user_payload = _build_group_user_payload(username)
+        if not user_payload:
+            return
+
+        socketio.emit(
+            "group_typing",
+            {
+                "group_id": int(group_id),
+                "is_typing": is_typing,
+                "user": user_payload,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+            room=f"group_{group_id}",
+            skip_sid=request.sid,
+        )
 
     @socketio.on("send_group_message")
     def handle_send_group_message(data):
@@ -1988,18 +2206,22 @@ def register_socket_events():
             return
 
         meta = message_service.get_message_metadata(message_id)
-        if not meta:
-            counterpart = chat_id
-        else:
-            sender = meta.get("sender")
-            recipient = meta.get("recipient")
-            if username not in {sender, recipient}:
-                emit("message_error", {"error": "Not allowed to delete this message"})
-                return
-            counterpart = recipient if sender == username else sender
+        if not meta or meta.get("type") != "private":
+            emit("message_error", {"error": "Message not found"})
+            return
+
+        sender = meta.get("sender")
+        recipient = meta.get("recipient")
+        if username not in {sender, recipient}:
+            emit("message_error", {"error": "Not allowed to delete this message"})
+            return
+        counterpart = recipient if sender == username else sender
 
         if not counterpart:
             emit("message_error", {"error": "Unable to resolve message recipient"})
+            return
+        if counterpart != chat_id:
+            emit("message_error", {"error": "Message not found in this chat"})
             return
 
         message_service.ack_messages(counterpart, [message_id])
@@ -2015,9 +2237,62 @@ def register_socket_events():
             "deleted_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
         }
         socketio.emit("message_deleted", payload, room=counterpart)
+        socketio.emit("message_deleted", payload, room=username)
         message_service.queue_message_deletion_event(counterpart, "message_deleted", payload)
+        message_service.queue_message_deletion_event(username, "message_deleted", payload)
         message_service.delete_message_metadata(message_id)
         emit("message_delete_confirmed", {"message_id": message_id, "chat_id": counterpart})
+
+    @socketio.on("delete_message_for_me")
+    def handle_delete_message_for_me(data):
+        username = session.get("username")
+        if not username:
+            emit("message_error", {"error": "Unauthorized"})
+            return
+
+        if not isinstance(data, dict):
+            emit("message_error", {"error": "Invalid payload"})
+            return
+
+        message_id = (data.get("message_id") or "").strip()
+        chat_id = (data.get("chat_id") or "").strip()
+        if not message_id or not chat_id:
+            emit("message_error", {"error": "message_id and chat_id are required"})
+            return
+
+        meta = message_service.get_message_metadata(message_id)
+        if not meta or meta.get("type") != "private":
+            emit("message_error", {"error": "Message not found"})
+            return
+
+        sender = meta.get("sender")
+        recipient = meta.get("recipient")
+        if username not in {sender, recipient}:
+            emit("message_error", {"error": "Not allowed to delete this message"})
+            return
+        counterpart = recipient if sender == username else sender
+        if counterpart != chat_id:
+            emit("message_error", {"error": "Message not found in this chat"})
+            return
+
+        deleted = message_service.mark_private_message_deleted_for_user(
+            username=username,
+            chat_id=counterpart,
+            message_id=message_id,
+        )
+        if not deleted:
+            emit("message_error", {"error": "Message not found in this chat"})
+            return
+
+        payload = {
+            "chat_id": counterpart,
+            "message_id": message_id,
+            "deleted_by": username,
+            "deleted_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+        }
+        socketio.emit("message_deleted_for_me", payload, room=username)
+        message_service.queue_message_deletion_event(username, "message_deleted_for_me", payload)
+        emit("message_delete_for_me_confirmed", {"message_id": message_id, "chat_id": counterpart})
 
     @socketio.on("get_deleted_messages")
     def handle_get_deleted_messages(data):
@@ -2118,6 +2393,58 @@ def register_socket_events():
 
         message_service.delete_message_metadata(message_id)
         emit("group_message_delete_confirmed", {"group_id": group_id, "message_id": message_id})
+
+    @socketio.on("delete_group_message_for_me")
+    def handle_delete_group_message_for_me(data):
+        username = session.get("username")
+        if not username:
+            emit("message_error", {"error": "Unauthorized"})
+            return
+
+        if not isinstance(data, dict):
+            emit("message_error", {"error": "Invalid payload"})
+            return
+
+        group_id = data.get("group_id")
+        message_id = (data.get("message_id") or "").strip()
+        if not group_id or not message_id:
+            emit("message_error", {"error": "group_id and message_id are required"})
+            return
+
+        from app.repositories import user_repository, group_repository
+
+        user = user_repository.get_by_username(username)
+        if not user or not group_repository.is_member(group_id, user.id):
+            emit("message_error", {"error": "You are not a member of this group"})
+            return
+
+        meta = message_service.get_message_metadata(message_id)
+        if not meta or int(meta.get("group_id") or -1) != int(group_id):
+            emit("message_error", {"error": "Message not found in this group"})
+            return
+
+        deleted = message_service.mark_group_message_deleted_for_user(
+            username=username,
+            group_id=group_id,
+            message_id=message_id,
+        )
+        if not deleted:
+            emit("message_error", {"error": "Message not found in this group"})
+            return
+
+        payload = {
+            "group_id": int(group_id),
+            "message_id": message_id,
+            "deleted_by": username,
+            "deleted_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+        }
+        socketio.emit("group_message_deleted_for_me", payload, room=username)
+        message_service.queue_message_deletion_event(
+            username,
+            "group_message_deleted_for_me",
+            payload,
+        )
+        emit("group_message_delete_for_me_confirmed", {"group_id": group_id, "message_id": message_id})
 
     @socketio.on("get_group_deleted_messages")
     def handle_get_group_deleted_messages(data):

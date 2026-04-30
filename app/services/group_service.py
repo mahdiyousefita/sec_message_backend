@@ -48,7 +48,12 @@ def _build_group_format_maps(groups: list[Group]):
     }
     profile_rows = (
         Profile.query
-        .with_entities(Profile.user_id, Profile.name, Profile.image_object_name)
+        .with_entities(
+            Profile.user_id,
+            Profile.name,
+            Profile.image_object_name,
+            Profile.profile_image_shape,
+        )
         .filter(Profile.user_id.in_(creator_ids))
         .all()
     ) if creator_ids else []
@@ -56,6 +61,7 @@ def _build_group_format_maps(groups: list[Group]):
         row[0]: {
             "name": row[1],
             "image_object_name": row[2],
+            "profile_image_shape": row[3] or "circle",
         }
         for row in profile_rows
     }
@@ -92,8 +98,10 @@ def get_mutual_followers(username: str, page: int = 1, limit: int = 50):
         db.session.query(
             mutual_user.id,
             mutual_user.username,
+            mutual_user.badge,
             Profile.name,
             Profile.image_object_name,
+            Profile.profile_image_shape,
         )
         .join(f1, f1.following_id == mutual_user.id)
         .join(f2, (f2.follower_id == mutual_user.id) & (f2.following_id == user.id))
@@ -110,7 +118,9 @@ def get_mutual_followers(username: str, page: int = 1, limit: int = 50):
             "id": row.id,
             "username": row.username,
             "name": row.name or row.username,
+            "badge": row.badge,
             "profile_image_url": _build_profile_image_url(row.image_object_name),
+            "profile_image_shape": row.profile_image_shape or "circle",
         }
         for row in rows
     ]
@@ -258,7 +268,9 @@ def get_group_detail(username: str, group_id: int):
             "id": m["id"],
             "username": m["username"],
             "name": m["name"],
+            "badge": m.get("badge"),
             "profile_image_url": _build_profile_image_url(m["image_object_name"]),
+            "profile_image_shape": m.get("profile_image_shape", "circle"),
             "public_key": m["public_key"],
         }
         for m in members
@@ -428,6 +440,7 @@ def _format_group(
             {
                 "name": profile.name,
                 "image_object_name": profile.image_object_name,
+                "profile_image_shape": profile.profile_image_shape or "circle",
             }
             if profile else None
         )
@@ -448,9 +461,14 @@ def _format_group(
                 if creator_profile and creator_profile.get("name")
                 else creator_username
             ),
+            "badge": group.creator.badge if group.creator else None,
             "profile_image_url": _build_profile_image_url(
                 creator_profile.get("image_object_name")
                 if creator_profile else None
+            ),
+            "profile_image_shape": (
+                creator_profile.get("profile_image_shape", "circle")
+                if creator_profile else "circle"
             ),
         },
         "member_count": int(member_count),

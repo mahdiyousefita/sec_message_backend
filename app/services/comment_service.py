@@ -178,7 +178,13 @@ def serialize_comment(comment, user_by_id=None, profile_by_user_id=None):
         "id": author_id,
         "username": username,
         "name": name,
+        "badge": user.badge if user else None,
         "profile_image_url": profile_image_url,
+        "profile_image_shape": (
+            profile.profile_image_shape
+            if profile and profile.profile_image_shape
+            else "circle"
+        ),
     }
 
     return {

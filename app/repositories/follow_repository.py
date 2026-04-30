@@ -115,8 +115,10 @@ def get_followers_page(following_id: int, page: int, limit: int):
         db.session.query(
             follower_user.id,
             follower_user.username,
+            follower_user.badge,
             Profile.name,
             Profile.image_object_name,
+            Profile.profile_image_shape,
         )
         .join(Follow, Follow.follower_id == follower_user.id)
         .outerjoin(Profile, Profile.user_id == follower_user.id)
@@ -135,7 +137,9 @@ def get_followers_page(following_id: int, page: int, limit: int):
             "id": row.id,
             "username": row.username,
             "name": row.name or row.username,
+            "badge": row.badge,
             "image_object_name": row.image_object_name,
+            "profile_image_shape": row.profile_image_shape or "circle",
         }
         for row in rows
     ]
@@ -158,8 +162,10 @@ def get_following_page(follower_id: int, page: int, limit: int):
         db.session.query(
             following_user.id,
             following_user.username,
+            following_user.badge,
             Profile.name,
             Profile.image_object_name,
+            Profile.profile_image_shape,
         )
         .join(Follow, Follow.following_id == following_user.id)
         .outerjoin(Profile, Profile.user_id == following_user.id)
@@ -178,7 +184,9 @@ def get_following_page(follower_id: int, page: int, limit: int):
             "id": row.id,
             "username": row.username,
             "name": row.name or row.username,
+            "badge": row.badge,
             "image_object_name": row.image_object_name,
+            "profile_image_shape": row.profile_image_shape or "circle",
         }
         for row in rows
     ]
