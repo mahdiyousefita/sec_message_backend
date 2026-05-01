@@ -195,6 +195,18 @@ tr:hover{background:#1e293b}
 
   <!-- Posts Section -->
   <div class="section" id="sec-posts">
+    <div class="card">
+      <div class="online-users-head">
+        <h3 style="margin:0">Post of the Day</h3>
+        <div>
+          <button class="btn btn-secondary" onclick="loadPostOfDayStatus()">Refresh</button>
+          <button class="btn btn-warning" onclick="runPostOfDayNow()" style="margin-left:.6rem">Run now</button>
+        </div>
+      </div>
+      <div id="postOfDayStatus" style="margin-top:.8rem">
+        <div class="form-note">Loading Post of the Day status…</div>
+      </div>
+    </div>
     <div class="search-bar">
       <input type="text" id="postSearch" placeholder="Search posts by text…" onkeydown="if(event.key==='Enter')searchPosts()">
       <button onclick="searchPosts()">Search</button>
@@ -449,6 +461,7 @@ let editingBadgeUserId = null;
 let editingBadgeUsername = '';
 let availableUserBadges = [];
 let onlineUsersPollTimer = null;
+let postOfDayCountdownTimer = null;
 
 function api(path, opts = {}) {
   const headers = { ...(opts.headers || {}) };
@@ -494,7 +507,10 @@ function switchTab(tab) {
   if (tab === 'users') {
     startOnlineUsersPolling();
     searchUsers();
-  } else if (tab === 'posts') searchPosts();
+  } else if (tab === 'posts') {
+    loadPostOfDayStatus();
+    searchPosts();
+  }
   else if (tab === 'reports') searchReports();
   else if (tab === 'crash') searchCrashLogs();
   else if (tab === 'updates') {
@@ -504,6 +520,7 @@ function switchTab(tab) {
     loadAboutUsSettings();
   }
   if (tab !== 'users') stopOnlineUsersPolling();
+  if (tab !== 'posts') stopPostOfDayCountdown();
 }
 
 // ── Users ───────────────────────────────────
@@ -787,6 +804,107 @@ async function saveCredentialChanges() {
 }
 
 // ── Posts ───────────────────────────────────
+async function loadPostOfDayStatus() {
+  const container = document.getElementById('postOfDayStatus');
+  container.innerHTML = '<div class="form-note">Loading Post of the Day status…</div>';
+  const res = await api('/api/post-of-day/status');
+  if (!res.ok) {
+    stopPostOfDayCountdown();
+    container.innerHTML = '<div class="form-note">Failed to load Post of the Day status.</div>';
+    return;
+  }
+
+  const data = await res.json().catch(() => ({}));
+  const winner = data.current_winner || null;
+  const scheduler = data.scheduler_enabled ? 'Enabled' : 'Disabled';
+  const cycleEnd = data.scheduled_cycle_end ? new Date(data.scheduled_cycle_end).toLocaleString() : '-';
+  const nextCycleEnd = data.next_scheduled_cycle_end ? new Date(data.next_scheduled_cycle_end).toLocaleString() : '-';
+  const serverTime = data.server_time ? new Date(data.server_time).toLocaleString() : '-';
+  const secondsUntilNextCycle = Number(data.seconds_until_next_cycle_end);
+  const scoring = data.scoring || {};
+
+  let winnerHtml = '<div class="form-note">No active winner right now.</div>';
+  if (winner) {
+    const winnerBadge = winner.author_badge ? renderCustomBadge(winner.author_badge) : '<span class="form-note">no badge</span>';
+    const textPreview = winner.text_preview ? esc(winner.text_preview) : '—';
+    winnerHtml = `
+      <div><b>Winner post:</b> #${winner.post_id}</div>
+      <div><b>Author:</b> ${esc(winner.author_username || ('user-' + winner.author_id))} ${winnerBadge}</div>
+      <div><b>Winner set at:</b> ${winner.daily_winner_at ? new Date(winner.daily_winner_at).toLocaleString() : '-'}</div>
+      <div><b>Post created at:</b> ${winner.created_at ? new Date(winner.created_at).toLocaleString() : '-'}</div>
+      <div style="margin-top:.45rem"><b>Post preview:</b> ${textPreview}</div>
+      <div style="margin-top:.6rem"><button class="btn btn-info" onclick="viewPost(${winner.post_id})">Open winner post</button></div>
+    `;
+  }
+
+  container.innerHTML = `
+    <div class="form-note"><b>Scheduler:</b> ${scheduler}</div>
+    <div class="form-note"><b>Server time:</b> ${esc(serverTime)}</div>
+    <div class="form-note"><b>Current cycle end:</b> ${esc(cycleEnd)}</div>
+    <div class="form-note"><b>Next reveal:</b> ${esc(nextCycleEnd)}</div>
+    <div class="form-note"><b>Time left:</b> <span id="postOfDayCountdown">-</span></div>
+    <div class="form-note"><b>Scoring:</b> upvote +${Number(scoring.upvote_score || 0)}, downvote -${Number(scoring.downvote_score || 0)}, comment +${Number(scoring.comment_score || 0)}</div>
+    <div style="margin-top:.5rem">${winnerHtml}</div>
+  `;
+  startPostOfDayCountdown(secondsUntilNextCycle);
+}
+
+async function runPostOfDayNow() {
+  const res = await api('/api/post-of-day/run', { method: 'POST' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    toast(data.error || 'Failed to run Post of the Day job', 'error');
+    return;
+  }
+
+  const status = String(data.status || 'ok');
+  const winnerId = data.winner_post_id ? ` winner #${data.winner_post_id}` : '';
+  toast(`Post of the Day job: ${status}${winnerId}`);
+  loadPostOfDayStatus();
+  if (currentTab === 'posts') searchPosts(postsPage);
+}
+
+function stopPostOfDayCountdown() {
+  if (!postOfDayCountdownTimer) return;
+  clearInterval(postOfDayCountdownTimer);
+  postOfDayCountdownTimer = null;
+}
+
+function formatCountdown(totalSeconds) {
+  const seconds = Math.max(0, Math.floor(totalSeconds));
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const secs = seconds % 60;
+
+  if (days > 0) return `${days}d ${hours}h ${minutes}m ${secs}s`;
+  if (hours > 0) return `${hours}h ${minutes}m ${secs}s`;
+  return `${minutes}m ${secs}s`;
+}
+
+function startPostOfDayCountdown(secondsUntilNextCycle) {
+  stopPostOfDayCountdown();
+  const countdownEl = document.getElementById('postOfDayCountdown');
+  if (!countdownEl) return;
+
+  let remaining = Number.isFinite(secondsUntilNextCycle)
+    ? Math.max(0, Math.floor(secondsUntilNextCycle))
+    : 0;
+
+  const render = () => {
+    countdownEl.textContent = remaining > 0 ? formatCountdown(remaining) : 'Any moment now';
+  };
+
+  render();
+  if (remaining <= 0) return;
+
+  postOfDayCountdownTimer = setInterval(() => {
+    remaining = Math.max(0, remaining - 1);
+    render();
+    if (remaining <= 0) stopPostOfDayCountdown();
+  }, 1000);
+}
+
 async function searchPosts(page = 1) {
   postsPage = page;
   const q = document.getElementById('postSearch').value.trim();
@@ -801,7 +919,7 @@ function renderPostsTable(data) {
   const container = document.getElementById('postsTable');
   if (!posts.length) { container.innerHTML = '<div class="empty">No posts found</div>'; document.getElementById('postsPagination').innerHTML = ''; return; }
 
-  let html = '<table><thead><tr><th>ID</th><th>Author</th><th>Text</th><th>Visibility</th><th>Date</th><th>Actions</th></tr></thead><tbody>';
+  let html = '<table><thead><tr><th>ID</th><th>Author</th><th>Text</th><th>Visibility</th><th>Status</th><th>Date</th><th>Actions</th></tr></thead><tbody>';
   for (const p of posts) {
     const short = p.text.length > 80 ? p.text.slice(0, 80) + '…' : p.text;
     const date = new Date(p.created_at).toLocaleDateString();
@@ -809,11 +927,15 @@ function renderPostsTable(data) {
       ? '<span class="badge badge-warning">Followers only</span>'
       : '<span class="badge badge-success">Public</span>';
     const hidden = p.is_hidden ? ' <span class="badge badge-danger">Hidden</span>' : '';
+    const winnerStatus = p.is_daily_winner
+      ? '<span class="badge badge-custom">Current winner</span>'
+      : (p.was_daily_winner ? '<span class="badge badge-custom">Past winner</span>' : '<span class="form-note">-</span>');
     html += `<tr>
       <td>${p.id}</td>
       <td>${esc(p.author)}</td>
       <td>${esc(short)}</td>
       <td>${visibility}${hidden}</td>
+      <td>${winnerStatus}</td>
       <td>${date}</td>
       <td>
         <button class="btn btn-info" onclick="viewPost(${p.id})">View</button>
@@ -1428,8 +1550,14 @@ function renderPostDetail(data) {
   const { post, comments } = data;
   const visibility = post.followers_only ? 'Followers only' : 'Public';
   const hidden = post.is_hidden ? ' · Hidden by moderation' : '';
+  const winnerStatus = post.is_daily_winner
+    ? ' · Current Post of the Day winner'
+    : (post.was_daily_winner ? ' · Past Post of the Day winner' : '');
+  const winnerAt = post.daily_winner_at
+    ? ` · Winner selected at ${new Date(post.daily_winner_at).toLocaleString()}`
+    : '';
   let html = `<div class="post-detail">
-    <div class="meta">By <b>${esc(post.author)}</b> · ${new Date(post.created_at).toLocaleString()} · ID: ${post.id} · ${visibility}${hidden}</div>
+    <div class="meta">By <b>${esc(post.author)}</b> · ${new Date(post.created_at).toLocaleString()} · ID: ${post.id} · ${visibility}${hidden}${winnerStatus}${winnerAt}</div>
     <div class="text">${esc(post.text)}</div>
   </div>`;
 

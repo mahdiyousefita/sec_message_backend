@@ -8,6 +8,16 @@ from unittest.mock import patch
 
 from tests.fake_redis import FakeRedis
 
+TEST_RSA_PUBLIC_KEY = """-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAti/rqUGnp4QpAP0kIDNn
+VoVQnseLuxdHterA2USyUnNpsAdu7XIU4Em22siMtDeFI0qaiXyOkUizIRAqJHnq
+geIhd+t8ScJWQzJP2Rjqoj3XsfPVKqzSqf2Qn/xk9DEcKCRZsmHG+QL+T7Yg+OFy
+c+j3Tb53JvWdyTw7eLTQSALody8q+dfb/4GWAWw7hIsRL30p0AuN51QnpfwmKSKV
+YfTr5Bt86Lfa1zANUgRkG81unNqCl5fKmQp1aJ9/maVMvWOj8acWANok1iQRw5Af
+LUrxymQbqlpGWjB8oQxHB6PIGq0Fs+z9/zkLymMXPhBTfyrZTFNNphijRFLwxtaa
+gwIDAQAB
+-----END PUBLIC KEY-----"""
+
 
 class TestApiRoutes(unittest.TestCase):
     @classmethod
@@ -19,7 +29,7 @@ class TestApiRoutes(unittest.TestCase):
 
         from app import create_app
         from app.db import db
-        from app.services import auth_service, message_service
+        from app.services import auth_service, message_service, story_service
         from app.models.comment_model import Comment
         from app.repositories import message_repository
         from app.extensions import redis_client as redis_module
@@ -31,6 +41,7 @@ class TestApiRoutes(unittest.TestCase):
         cls.db = db
         cls.auth_service = auth_service
         cls.message_service = message_service
+        cls.story_service = story_service
         cls.Comment = Comment
         cls.socket_events = socket_events
 
@@ -38,6 +49,7 @@ class TestApiRoutes(unittest.TestCase):
         cls.redis_patches = [
             patch.object(message_repository, "redis_client", cls.fake_redis),
             patch.object(redis_module, "redis_client", cls.fake_redis),
+            patch.object(story_service, "redis_client", cls.fake_redis),
             patch.object(contact_routes, "r", cls.fake_redis),
         ]
         for patcher in cls.redis_patches:
@@ -59,6 +71,7 @@ class TestApiRoutes(unittest.TestCase):
             self.auth_service.reset_login_rate_limit_state()
             self.db.drop_all()
             self.db.create_all()
+            self.app.config["MEDIA_CONTENT_SNIFFING_ENABLED"] = False
         self.socket_events._user_sids.clear()
         self.fake_redis.clear()
         uploads_dir = os.path.join(self.app.static_folder, "uploads")
@@ -66,7 +79,7 @@ class TestApiRoutes(unittest.TestCase):
             shutil.rmtree(uploads_dir)
 
     def _register(self, username, password="pass123", public_key=None):
-        public_key = public_key or f"{username}_pub_key"
+        public_key = public_key or TEST_RSA_PUBLIC_KEY
         with self.app.app_context():
             self.auth_service.register(username, password, public_key)
 
@@ -415,8 +428,58 @@ class TestApiRoutes(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
             response.get_json()["badges"],
-            ["verified", "moderator", "staff"],
+            ["verified", "moderator", "staff", "post_of_the_day"],
         )
+
+    def test_admin_post_of_day_status_and_manual_run_endpoints(self):
+        from flask_jwt_extended import create_access_token
+        from app.models.admin_model import AdminUser
+        from app.models.post_model import Post
+        from app.models.user_model import User
+
+        with self.app.app_context():
+            admin_user = User(
+                username="admin_manual",
+                password_hash="x",
+                public_key="pk_admin",
+            )
+            author_user = User(
+                username="alice_author",
+                password_hash="x",
+                public_key="pk_author",
+            )
+            self.db.session.add_all([admin_user, author_user])
+            self.db.session.flush()
+            self.db.session.add(AdminUser(user_id=admin_user.id))
+            self.db.session.add(
+                Post(
+                    author_id=author_user.id,
+                    text="candidate",
+                    created_at=datetime.utcnow() - timedelta(hours=1),
+                )
+            )
+            self.db.session.commit()
+            token = create_access_token(identity=admin_user.username)
+
+        headers = {"Authorization": f"Bearer {token}"}
+
+        status_before = self.client.get("/admin/api/post-of-day/status", headers=headers)
+        self.assertEqual(status_before.status_code, 200)
+        status_before_payload = status_before.get_json()
+        self.assertIn("scoring", status_before_payload)
+        self.assertIn("next_scheduled_cycle_end", status_before_payload)
+        self.assertIn("seconds_until_next_cycle_end", status_before_payload)
+        self.assertGreaterEqual(status_before_payload["seconds_until_next_cycle_end"], 0)
+
+        run_response = self.client.post("/admin/api/post-of-day/run", headers=headers)
+        self.assertEqual(run_response.status_code, 200)
+        run_payload = run_response.get_json()
+        self.assertIn(run_payload["status"], {"selected", "already_selected"})
+        self.assertIsNotNone(run_payload.get("winner_post_id"))
+
+        status_after = self.client.get("/admin/api/post-of-day/status", headers=headers)
+        self.assertEqual(status_after.status_code, 200)
+        self.assertIsNotNone(status_after.get_json().get("current_winner"))
 
     def test_profile_and_search_include_user_badge(self):
         self._register("admin")
@@ -1203,8 +1266,13 @@ class TestApiRoutes(unittest.TestCase):
         self.assertEqual(payload["total"], 3)
         self.assertEqual(len(payload["posts"]), 3)
         self.assertTrue(any(post["followers_only"] for post in payload["posts"]))
+        self.assertTrue(all("is_daily_winner" in post for post in payload["posts"]))
+        self.assertTrue(all("was_daily_winner" in post for post in payload["posts"]))
+        self.assertTrue(all("daily_winner_at" in post for post in payload["posts"]))
 
     def test_admin_post_detail_includes_media_url_for_rendering(self):
+        from app.models.post_model import Post
+
         self._register("admin")
         self._register("alice")
         self._make_admin("admin")
@@ -1232,6 +1300,13 @@ class TestApiRoutes(unittest.TestCase):
         self.assertEqual(create_post.status_code, 201)
         post_id = create_post.get_json()["post_id"]
 
+        with self.app.app_context():
+            post = Post.query.get(post_id)
+            self.assertIsNotNone(post)
+            post.is_daily_winner = True
+            post.daily_winner_at = datetime.utcnow()
+            self.db.session.commit()
+
         detail = self.client.get(f"/admin/api/posts/{post_id}", headers=admin_headers)
         self.assertEqual(detail.status_code, 200)
         payload = detail.get_json()
@@ -1239,6 +1314,9 @@ class TestApiRoutes(unittest.TestCase):
         self.assertEqual(len(payload["post"]["media"]), 1)
         self.assertIn("url", payload["post"]["media"][0])
         self.assertIn("/media/posts/", payload["post"]["media"][0]["url"])
+        self.assertTrue(payload["post"]["is_daily_winner"])
+        self.assertTrue(payload["post"]["was_daily_winner"])
+        self.assertIsNotNone(payload["post"]["daily_winner_at"])
 
     def test_create_post_with_image_media_multipart(self):
         self._register("alice")
@@ -1413,6 +1491,56 @@ class TestApiRoutes(unittest.TestCase):
 
         self.assertEqual(resp.status_code, 400)
         self.assertEqual(resp.get_json()["error"], "Music posts can contain only one audio file")
+
+    def test_create_music_post_accepts_generic_declared_mimetype_when_filename_is_audio(self):
+        self._register("alice")
+        headers = self._auth_header("alice")
+
+        class FakeMinio:
+            def bucket_exists(self, *args, **kwargs):
+                return True
+
+            def put_object(self, **kwargs):
+                return None
+
+        with patch("app.services.post_service.get_minio_client", return_value=FakeMinio()):
+            create_resp = self.client.post(
+                "/api/posts",
+                data={
+                    "text": "",
+                    "media": (
+                        io.BytesIO(b"fake-audio-bytes"),
+                        "ambient.opus",
+                        "application/octet-stream",
+                    ),
+                },
+                headers=headers,
+                content_type="multipart/form-data",
+            )
+
+        self.assertEqual(create_resp.status_code, 201)
+        list_resp = self.client.get("/api/posts", headers=headers)
+        self.assertEqual(list_resp.status_code, 200)
+        media = list_resp.get_json()["posts"][0]["media"][0]
+        self.assertTrue(media["mime_type"].startswith("audio/"))
+
+    def test_create_post_rejects_when_same_user_upload_is_already_in_progress(self):
+        self._register("alice")
+        headers = self._auth_header("alice")
+        lock_key = f"{self.app.config['POST_UPLOAD_LOCK_KEY_PREFIX']}:alice"
+        self.fake_redis.set(lock_key, "in-flight")
+
+        response = self.client.post(
+            "/api/posts",
+            json={"text": "second upload"},
+            headers=headers,
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(
+            response.get_json()["error"],
+            "Another post upload is already in progress",
+        )
 
     def test_playlist_adds_music_track_and_lists_it(self):
         self._register("alice")
@@ -3391,6 +3519,68 @@ class TestApiRoutes(unittest.TestCase):
         self.assertEqual(search_all.status_code, 200)
         self.assertEqual(search_all.get_json()["posts"][0]["viewer_vote"], 1)
 
+    def test_post_responses_include_daily_winner_fields(self):
+        with self.app.app_context():
+            from app.models.post_model import Post
+            from app.models.user_model import User
+
+            user = User(
+                username="alice",
+                password_hash="x",
+                public_key="pk1",
+            )
+            self.db.session.add(user)
+            self.db.session.flush()
+
+            historical_at = datetime(2026, 4, 29, 21, 0, 0, tzinfo=timezone.utc)
+            winner_post = Post(
+                author_id=user.id,
+                text="winner-post",
+                created_at=datetime(2026, 4, 30, 20, 0, 0),
+                is_daily_winner=True,
+                daily_winner_at=historical_at,
+            )
+            regular_post = Post(
+                author_id=user.id,
+                text="regular-post",
+                created_at=datetime(2026, 4, 30, 19, 0, 0),
+                is_daily_winner=False,
+                daily_winner_at=None,
+            )
+            self.db.session.add_all([winner_post, regular_post])
+            self.db.session.commit()
+
+        feed_response = self.client.get("/api/posts")
+        self.assertEqual(feed_response.status_code, 200)
+        feed_posts = feed_response.get_json()["posts"]
+        by_text = {item["text"]: item for item in feed_posts}
+
+        self.assertTrue(by_text["winner-post"]["is_daily_winner"])
+        self.assertTrue(by_text["winner-post"]["was_daily_winner"])
+        self.assertIsNotNone(by_text["winner-post"]["daily_winner_at"])
+        self.assertFalse(by_text["regular-post"]["is_daily_winner"])
+        self.assertFalse(by_text["regular-post"]["was_daily_winner"])
+        self.assertIsNone(by_text["regular-post"]["daily_winner_at"])
+
+        search_posts = self.client.get("/api/search/posts?q=post")
+        self.assertEqual(search_posts.status_code, 200)
+        search_by_text = {
+            item["text"]: item
+            for item in search_posts.get_json()["posts"]
+        }
+        self.assertIn("is_daily_winner", search_by_text["winner-post"])
+        self.assertIn("was_daily_winner", search_by_text["winner-post"])
+        self.assertIn("daily_winner_at", search_by_text["winner-post"])
+
+        profile_posts = self.client.get("/api/profiles/alice/posts")
+        self.assertEqual(profile_posts.status_code, 200)
+        profile_by_text = {
+            item["text"]: item
+            for item in profile_posts.get_json()["posts"]
+        }
+        self.assertTrue(profile_by_text["winner-post"]["was_daily_winner"])
+        self.assertIsNotNone(profile_by_text["winner-post"]["daily_winner_at"])
+
     def test_report_types_include_copyright(self):
         response = self.client.get("/api/report-types")
 
@@ -4099,6 +4289,318 @@ class TestApiRoutes(unittest.TestCase):
                 )
 
         self.assertIn("Image too large", str(raised.exception))
+
+    def test_story_upload_feed_view_like_and_viewers(self):
+        self._register("alice")
+        self._register("bob")
+
+        with self.app.app_context():
+            from app.services import follow_service
+
+            follow_service.follow_by_username("bob", "alice")
+
+        alice_headers = self._auth_header("alice")
+        bob_headers = self._auth_header("bob")
+        png_payload = (
+            b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01"
+            b"\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
+            b"\x00\x00\x00\x0bIDATx\x9cc`\x00\x02\x00\x00\x05\x00\x01"
+            b"\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+        )
+
+        upload_response = self.client.post(
+            "/api/story/upload",
+            headers=alice_headers,
+            data={
+                "file": (io.BytesIO(png_payload), "story.png"),
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(upload_response.status_code, 201)
+        upload_body = upload_response.get_json()
+        story_id = upload_body["story_id"]
+
+        feed_response = self.client.get("/api/story/feed", headers=bob_headers)
+        self.assertEqual(feed_response.status_code, 200)
+        feed_body = feed_response.get_json()
+        self.assertTrue(feed_body["user_stories"])
+        self.assertEqual(feed_body["user_stories"][0]["username"], "alice")
+        self.assertIn(story_id, feed_body["user_stories"][0]["story_ids"])
+
+        bundle_response = self.client.get(f"/api/story/{story_id}", headers=bob_headers)
+        self.assertEqual(bundle_response.status_code, 200)
+        bundle_body = bundle_response.get_json()
+        self.assertEqual(bundle_body["story"]["story_id"], story_id)
+
+        view_response = self.client.post(
+            "/api/story/view",
+            headers=bob_headers,
+            json={"story_id": story_id},
+        )
+        self.assertEqual(view_response.status_code, 200)
+
+        like_response = self.client.post(
+            "/api/story/like",
+            headers=bob_headers,
+            json={"story_id": story_id, "liked": True},
+        )
+        self.assertEqual(like_response.status_code, 200)
+        self.assertTrue(like_response.get_json()["liked"])
+
+        viewers_response = self.client.get(
+            f"/api/story/{story_id}/viewers",
+            headers=alice_headers,
+        )
+        self.assertEqual(viewers_response.status_code, 200)
+        viewers_body = viewers_response.get_json()
+        self.assertEqual(viewers_body["total"], 1)
+        self.assertEqual(viewers_body["viewers"][0]["username"], "bob")
+        self.assertTrue(viewers_body["viewers"][0]["liked"])
+
+    def test_story_mentions_share_to_dm_for_contacts_only(self):
+        self._register("alice")
+        self._register("bob")
+        self._register("charlie")
+
+        with self.app.app_context():
+            from app.services import follow_service
+
+            # Contact list for story mention uses people the poster follows.
+            follow_service.follow_by_username("alice", "bob")
+
+        alice_headers = self._auth_header("alice")
+        bob_headers = self._auth_header("bob")
+        charlie_headers = self._auth_header("charlie")
+        png_payload = (
+            b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01"
+            b"\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
+            b"\x00\x00\x00\x0bIDATx\x9cc`\x00\x02\x00\x00\x05\x00\x01"
+            b"\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+        )
+
+        upload_response = self.client.post(
+            "/api/story/upload",
+            headers=alice_headers,
+            data={
+                "file": (io.BytesIO(png_payload), "story.png"),
+                "mentions": ["bob", "charlie"],
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(upload_response.status_code, 201)
+        body = upload_response.get_json()
+        self.assertEqual(len(body["mention_user_ids"]), 1)
+
+        bob_inbox = self.client.get("/api/messages/inbox", headers=bob_headers)
+        self.assertEqual(bob_inbox.status_code, 200)
+        bob_messages = bob_inbox.get_json()["messages"]
+        self.assertEqual(len(bob_messages), 1)
+        self.assertEqual(bob_messages[0]["attachment"]["type"], "story_mention")
+
+        charlie_inbox = self.client.get("/api/messages/inbox", headers=charlie_headers)
+        self.assertEqual(charlie_inbox.status_code, 200)
+        self.assertEqual(charlie_inbox.get_json()["messages"], [])
+
+    def test_story_mention_candidates_support_typeahead_and_limit(self):
+        self._register("alice")
+        followed_usernames = [
+            "bobalpha",
+            "bobbravo",
+            "bobsigma",
+            "bobdelta",
+            "bobecho1",
+            "xbobtail",
+        ]
+        for username in followed_usernames:
+            self._register(username)
+        self._register("charlie9")
+
+        with self.app.app_context():
+            from app.services import follow_service
+
+            for username in followed_usernames:
+                follow_service.follow_by_username("alice", username)
+            follow_service.follow_by_username("alice", "charlie9")
+
+        alice_headers = self._auth_header("alice")
+        response = self.client.get(
+            "/api/story/mentions?q=bob&limit=6",
+            headers=alice_headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+
+        result_usernames = [item["username"] for item in body["users"]]
+        self.assertEqual(body["limit"], 6)
+        self.assertEqual(len(result_usernames), 6)
+        self.assertNotIn("charlie9", result_usernames)
+        self.assertTrue(all(name.startswith("bob") for name in result_usernames[:5]))
+        self.assertEqual(result_usernames[-1], "xbobtail")
+
+    def test_story_reply_creates_dm_for_owner(self):
+        self._register("alice")
+        self._register("bob")
+
+        with self.app.app_context():
+            from app.services import follow_service
+
+            follow_service.follow_by_username("bob", "alice")
+
+        alice_headers = self._auth_header("alice")
+        bob_headers = self._auth_header("bob")
+        png_payload = (
+            b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01"
+            b"\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
+            b"\x00\x00\x00\x0bIDATx\x9cc`\x00\x02\x00\x00\x05\x00\x01"
+            b"\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+        )
+
+        upload_response = self.client.post(
+            "/api/story/upload",
+            headers=alice_headers,
+            data={
+                "file": (io.BytesIO(png_payload), "story.png"),
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(upload_response.status_code, 201)
+        story_id = upload_response.get_json()["story_id"]
+
+        reply_response = self.client.post(
+            "/api/story/reply",
+            headers=bob_headers,
+            json={"story_id": story_id, "reply_text": "nice story"},
+        )
+        self.assertEqual(reply_response.status_code, 200)
+
+        alice_inbox = self.client.get("/api/messages/inbox", headers=alice_headers)
+        self.assertEqual(alice_inbox.status_code, 200)
+        alice_messages = alice_inbox.get_json()["messages"]
+        self.assertEqual(len(alice_messages), 1)
+        self.assertEqual(alice_messages[0]["attachment"]["type"], "story_reply")
+        self.assertEqual(alice_messages[0]["from"], "bob")
+
+    def test_story_upload_rejects_video_longer_than_30_seconds(self):
+        self._register("alice")
+        headers = self._auth_header("alice")
+
+        with patch.object(self.story_service, "_get_mp4_duration_seconds", return_value=31.0):
+            response = self.client.post(
+                "/api/story/upload",
+                headers=headers,
+                data={
+                    "file": (io.BytesIO(b"not-a-real-mp4"), "story.mp4", "video/mp4"),
+                },
+                content_type="multipart/form-data",
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.get_json()["error"],
+            "Story videos must be 30 seconds or shorter",
+        )
+
+    def test_story_upload_accepts_video_within_30_seconds(self):
+        self._register("alice")
+        headers = self._auth_header("alice")
+
+        with patch.object(self.story_service, "_get_mp4_duration_seconds", return_value=29.9):
+            response = self.client.post(
+                "/api/story/upload",
+                headers=headers,
+                data={
+                    "file": (io.BytesIO(b"fake-video"), "story.mp4", "video/mp4"),
+                },
+                content_type="multipart/form-data",
+            )
+
+        self.assertEqual(response.status_code, 201)
+        body = response.get_json()
+        self.assertEqual(body["media_type"], "video")
+
+    def test_story_upload_accepts_non_mp4_video_if_safe(self):
+        self._register("alice")
+        headers = self._auth_header("alice")
+
+        response = self.client.post(
+            "/api/story/upload",
+            headers=headers,
+            data={
+                "file": (io.BytesIO(b"fake-webm"), "story.webm", "video/webm"),
+            },
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        body = response.get_json()
+        self.assertEqual(body["media_type"], "video")
+
+    def test_story_upload_rejects_when_daily_limit_reached(self):
+        self._register("alice")
+        headers = self._auth_header("alice")
+        original_limit = self.app.config.get("STORY_DAILY_UPLOAD_LIMIT")
+        self.app.config["STORY_DAILY_UPLOAD_LIMIT"] = 1
+        try:
+            first = self.client.post(
+                "/api/story/upload",
+                headers=headers,
+                data={
+                    "file": (io.BytesIO(b"first-story"), "story1.jpg", "image/jpeg"),
+                },
+                content_type="multipart/form-data",
+            )
+            self.assertEqual(first.status_code, 201)
+
+            response = self.client.post(
+                "/api/story/upload",
+                headers=headers,
+                data={
+                    "file": (io.BytesIO(b"second-story"), "story2.jpg", "image/jpeg"),
+                },
+                content_type="multipart/form-data",
+            )
+
+            self.assertEqual(response.status_code, 400)
+            self.assertEqual(
+                response.get_json()["error"],
+                "Daily story limit reached (max 1 stories per day)",
+            )
+        finally:
+            self.app.config["STORY_DAILY_UPLOAD_LIMIT"] = original_limit
+
+    def test_story_upload_failure_does_not_consume_daily_quota(self):
+        self._register("alice")
+        headers = self._auth_header("alice")
+        original_limit = self.app.config.get("STORY_DAILY_UPLOAD_LIMIT")
+        self.app.config["STORY_DAILY_UPLOAD_LIMIT"] = 1
+        try:
+            with patch.object(
+                self.story_service.message_service,
+                "upload_message_attachment",
+                side_effect=ValueError("Attachment file is required"),
+            ):
+                failed = self.client.post(
+                    "/api/story/upload",
+                    headers=headers,
+                    data={
+                        "file": (io.BytesIO(b"broken"), "broken.jpg", "image/jpeg"),
+                    },
+                    content_type="multipart/form-data",
+                )
+            self.assertEqual(failed.status_code, 400)
+
+            # If quota rollback works, the next valid upload still succeeds.
+            success = self.client.post(
+                "/api/story/upload",
+                headers=headers,
+                data={
+                    "file": (io.BytesIO(b"good-image"), "story.jpg", "image/jpeg"),
+                },
+                content_type="multipart/form-data",
+            )
+            self.assertEqual(success.status_code, 201)
+        finally:
+            self.app.config["STORY_DAILY_UPLOAD_LIMIT"] = original_limit
 
     def test_messages_routes_inbox_and_send_deprecated(self):
         self._register("alice")

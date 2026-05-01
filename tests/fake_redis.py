@@ -73,7 +73,10 @@ class FakeRedis:
     def get(self, key):
         return self._strings.get(key)
 
-    def set(self, key, value):
+    def set(self, key, value, nx=False, ex=None):
+        _ = ex
+        if nx and key in self._strings:
+            return False
         self._strings[key] = value
         return True
 

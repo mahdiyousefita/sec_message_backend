@@ -1,6 +1,7 @@
 import os
 import threading
 import time
+from datetime import datetime, timedelta
 
 from flask import Flask, jsonify
 from flask_jwt_extended import JWTManager
@@ -32,7 +33,14 @@ from app.routes.report_routes import report_bp
 from app.routes.block_routes import block_bp
 from app.routes.playlist_routes import playlist_bp
 from app.routes.crash_routes import crash_bp
-from app.services import async_task_service, report_service, password_security
+from app.routes.story_routes import story_bp
+from app.services import (
+    async_task_service,
+    report_service,
+    password_security,
+    daily_winner_service,
+    story_service,
+)
 
 import app.models.activity_notification_model  # noqa: F401 – register model with SQLAlchemy
 import app.models.about_us_model  # noqa: F401 – register model with SQLAlchemy
@@ -44,9 +52,14 @@ import app.models.group_model  # noqa: F401 – register model with SQLAlchemy
 import app.models.pending_registration_model  # noqa: F401 – register model with SQLAlchemy
 import app.models.playlist_track_model  # noqa: F401 – register model with SQLAlchemy
 import app.models.report_model  # noqa: F401 – register model with SQLAlchemy
+import app.models.story_model  # noqa: F401 – register model with SQLAlchemy
 
 _cleanup_worker_started = False
 _cleanup_worker_lock = threading.Lock()
+_daily_winner_worker_started = False
+_daily_winner_worker_lock = threading.Lock()
+_story_cleanup_worker_started = False
+_story_cleanup_worker_lock = threading.Lock()
 
 
 def _ensure_post_visibility_schema():
@@ -97,6 +110,54 @@ def _ensure_post_quote_schema():
         text(
             "CREATE INDEX IF NOT EXISTS ix_posts_quoted_post_id "
             "ON posts (quoted_post_id)"
+        )
+    )
+
+    db.session.commit()
+
+
+def _ensure_post_daily_winner_schema():
+    inspector = inspect(db.engine)
+    if not inspector.has_table("posts"):
+        return
+
+    column_names = {
+        column["name"]
+        for column in inspector.get_columns("posts")
+    }
+    if "is_daily_winner" not in column_names:
+        db.session.execute(
+            text(
+                "ALTER TABLE posts "
+                "ADD COLUMN is_daily_winner BOOLEAN NOT NULL DEFAULT FALSE"
+            )
+        )
+
+    if "daily_winner_at" not in column_names:
+        db.session.execute(
+            text(
+                "ALTER TABLE posts "
+                "ADD COLUMN daily_winner_at TIMESTAMP"
+            )
+        )
+
+    db.session.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_posts_is_daily_winner "
+            "ON posts (is_daily_winner)"
+        )
+    )
+    db.session.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_posts_daily_winner_at "
+            "ON posts (daily_winner_at)"
+        )
+    )
+    db.session.execute(
+        text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_posts_single_daily_winner "
+            "ON posts (is_daily_winner) "
+            "WHERE is_daily_winner = TRUE"
         )
     )
 
@@ -655,6 +716,129 @@ def _start_moderation_cleanup_worker(app: Flask):
     thread.start()
 
 
+def _next_daily_winner_run(now: datetime) -> datetime:
+    candidate = now.replace(hour=21, minute=0, second=0, microsecond=0)
+    if now >= candidate:
+        candidate = candidate + timedelta(days=1)
+    return candidate
+
+
+def _start_daily_winner_worker(app: Flask):
+    global _daily_winner_worker_started
+
+    enabled = bool(app.config.get("POST_OF_DAY_SCHEDULER_ENABLED", True))
+    if not enabled:
+        app.logger.info("Post of the Day scheduler disabled.")
+        return
+
+    with _daily_winner_worker_lock:
+        if _daily_winner_worker_started:
+            return
+        _daily_winner_worker_started = True
+
+    app_ref = app
+
+    def _worker():
+        app_ref.logger.info("Post of the Day scheduler started (daily at 21:00 server time).")
+        while True:
+            now = datetime.now()
+            next_run = _next_daily_winner_run(now)
+            sleep_seconds = max(1.0, (next_run - now).total_seconds())
+            time.sleep(sleep_seconds)
+
+            try:
+                with app_ref.app_context():
+                    result = daily_winner_service.run_daily_winner_selection(
+                        run_at=next_run,
+                        source="scheduler",
+                    )
+                    app_ref.logger.info(
+                        "Post of the Day job result=%s cycle_end=%s winner_post_id=%s",
+                        result.get("status"),
+                        result.get("cycle_end"),
+                        result.get("winner_post_id"),
+                    )
+            except Exception:
+                app_ref.logger.exception("Post of the Day scheduler failed")
+
+    thread = threading.Thread(
+        target=_worker,
+        name="post-of-day-worker",
+        daemon=True,
+    )
+    thread.start()
+
+
+def _start_story_cleanup_worker(app: Flask):
+    global _story_cleanup_worker_started
+
+    enabled = bool(app.config.get("STORY_CLEANUP_BACKGROUND_ENABLED", True))
+    if not enabled:
+        if bool(app.config.get("STORY_VIEW_ASYNC_ENABLED", False)):
+            app.logger.warning(
+                "Story view async recording is enabled but story cleanup worker is disabled. "
+                "Queued story views will not be flushed unless an external worker calls flush_story_view_queue."
+            )
+        app.logger.info("Story cleanup in-process worker disabled.")
+        return
+
+    with _story_cleanup_worker_lock:
+        if _story_cleanup_worker_started:
+            return
+        _story_cleanup_worker_started = True
+
+    interval = max(
+        int(app.config.get("STORY_CLEANUP_INTERVAL_SECONDS", 300)),
+        10,
+    )
+    batch_size = max(
+        int(app.config.get("STORY_CLEANUP_BATCH_SIZE", 200)),
+        1,
+    )
+
+    app_ref = app
+
+    def _worker():
+        app_ref.logger.info(
+            "Story cleanup background worker started (interval=%ss, batch_size=%s)",
+            interval,
+            batch_size,
+        )
+        while True:
+            time.sleep(interval)
+            try:
+                with app_ref.app_context():
+                    deleted_count = story_service.cleanup_expired_stories(
+                        batch_size=batch_size,
+                    )
+                    if deleted_count:
+                        app_ref.logger.info(
+                            "Story cleanup removed expired stories count=%s",
+                            deleted_count,
+                        )
+                    if app_ref.config.get("STORY_VIEW_ASYNC_ENABLED", False):
+                        flushed = story_service.flush_story_view_queue(
+                            batch_size=app_ref.config.get(
+                                "STORY_VIEW_QUEUE_BATCH_SIZE",
+                                200,
+                            ),
+                        )
+                        if flushed:
+                            app_ref.logger.info(
+                                "Story view queue flushed batch_count=%s",
+                                flushed,
+                            )
+            except Exception:
+                app_ref.logger.exception("Story cleanup worker failed")
+
+    thread = threading.Thread(
+        target=_worker,
+        name="story-cleanup-worker",
+        daemon=True,
+    )
+    thread.start()
+
+
 def create_app():
     app = Flask(__name__,
                 template_folder='templates',
@@ -710,6 +894,7 @@ def create_app():
     app.register_blueprint(crash_bp, url_prefix="/api")
     app.register_blueprint(block_bp, url_prefix="/api")
     app.register_blueprint(playlist_bp, url_prefix="/api")
+    app.register_blueprint(story_bp, url_prefix="/api")
     app.register_blueprint(admin_bp, url_prefix="/admin")
     app.register_blueprint(group_bp, url_prefix="/api/groups")
 
@@ -717,6 +902,7 @@ def create_app():
         db.create_all()
         _ensure_post_visibility_schema()
         _ensure_post_quote_schema()
+        _ensure_post_daily_winner_schema()
         _ensure_media_schema()
         _ensure_performance_indexes()
         _ensure_app_update_schema()
@@ -739,6 +925,8 @@ def create_app():
     if os.getenv("FLASK_RUN_FROM_CLI", "").strip().lower() in {"1", "true"}:
         app.logger.info("Using Flask CLI runtime. For production prefer Gunicorn.")
     _start_moderation_cleanup_worker(app)
+    _start_daily_winner_worker(app)
+    _start_story_cleanup_worker(app)
 
     # error handler
     @app.errorhandler(HTTPException)

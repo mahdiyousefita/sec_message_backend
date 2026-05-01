@@ -157,6 +157,11 @@ class Config:
         1,
         _env_int("AUTH_PASSWORD_MIGRATION_BATCH_SIZE", 1000),
     )
+    # Post of the Day scoring knobs.
+    UPVOTE_SCORE = max(0, _env_int("UPVOTE_SCORE", 3))
+    DOWNVOTE_SCORE = max(0, _env_int("DOWNVOTE_SCORE", 1))
+    COMMENT_SCORE = max(0, _env_int("COMMENT_SCORE", 2))
+    POST_OF_DAY_SCHEDULER_ENABLED = _env_bool("POST_OF_DAY_SCHEDULER_ENABLED", True)
 
     MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "localhost:9000")
     MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "admin")
@@ -188,6 +193,14 @@ class Config:
     MEDIA_CONTENT_REJECT_ACTIVE_TEXT = _env_bool("MEDIA_CONTENT_REJECT_ACTIVE_TEXT", True)
     MEDIA_CONTENT_ENFORCE_CATEGORY_MATCH = _env_bool("MEDIA_CONTENT_ENFORCE_CATEGORY_MATCH", True)
     MEDIA_CONTENT_SNIFF_BYTES = max(256, _env_int("MEDIA_CONTENT_SNIFF_BYTES", 2048))
+    POST_UPLOAD_LOCK_KEY_PREFIX = _env_str(
+        "POST_UPLOAD_LOCK_KEY_PREFIX",
+        "post_upload:lock",
+    )
+    POST_UPLOAD_LOCK_TTL_SECONDS = max(
+        30,
+        _env_int("POST_UPLOAD_LOCK_TTL_SECONDS", 300),
+    )
     PROFILE_VIDEO_MAX_DURATION_SECONDS = int(
         os.getenv("PROFILE_VIDEO_MAX_DURATION_SECONDS", "5")
     )
@@ -331,6 +344,32 @@ class Config:
     ACTIVITY_MILESTONE_MIN_COMMENTERS = max(
         1,
         _env_int("ACTIVITY_MILESTONE_MIN_COMMENTERS", 3),
+    )
+
+    STORY_TTL_HOURS = max(1, _env_int("STORY_TTL_HOURS", 24))
+    STORY_DAILY_UPLOAD_LIMIT = max(1, _env_int("STORY_DAILY_UPLOAD_LIMIT", 8))
+    STORY_DAILY_LIMIT_TZ_OFFSET_MINUTES = _env_int(
+        "STORY_DAILY_LIMIT_TZ_OFFSET_MINUTES",
+        0,
+    )
+    STORY_ACTIVE_FEED_CACHE_TTL_SECONDS = max(
+        5,
+        _env_int("STORY_ACTIVE_FEED_CACHE_TTL_SECONDS", 45),
+    )
+    STORY_VIEWERS_MAX_LIMIT = max(10, _env_int("STORY_VIEWERS_MAX_LIMIT", 100))
+    STORY_CLEANUP_BACKGROUND_ENABLED = _env_bool(
+        "STORY_CLEANUP_BACKGROUND_ENABLED",
+        True,
+    )
+    STORY_CLEANUP_INTERVAL_SECONDS = max(
+        10,
+        _env_int("STORY_CLEANUP_INTERVAL_SECONDS", 300),
+    )
+    STORY_CLEANUP_BATCH_SIZE = max(1, _env_int("STORY_CLEANUP_BATCH_SIZE", 200))
+    STORY_VIEW_ASYNC_ENABLED = _env_bool("STORY_VIEW_ASYNC_ENABLED", False)
+    STORY_VIEW_QUEUE_BATCH_SIZE = max(
+        1,
+        _env_int("STORY_VIEW_QUEUE_BATCH_SIZE", 200),
     )
 
     # Moderation/reporting retention policy

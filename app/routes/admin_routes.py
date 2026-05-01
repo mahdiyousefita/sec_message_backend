@@ -22,20 +22,16 @@ from app.services import app_update_service
 from app.services import about_us_service
 from app.services import crash_log_service
 from app.services import auth_service
+from app.services import daily_winner_service
 from app.services.post_service import _build_media_url
+from app.constants.badges import USER_BADGE_CATALOG
+from datetime import datetime
 
 admin_bp = Blueprint(
     "admin",
     __name__,
     template_folder="../templates",
 )
-
-USER_BADGE_CATALOG = [
-    "verified",
-    "moderator",
-    "staff",
-]
-
 
 def _is_admin(user_id):
     """Return True when user_id has a row in admin_users."""
@@ -121,6 +117,24 @@ def admin_me():
 @admin_required
 def admin_list_badges():
     return jsonify({"badges": USER_BADGE_CATALOG}), 200
+
+
+@admin_bp.route("/api/post-of-day/status", methods=["GET"])
+@admin_required
+def admin_get_post_of_day_status():
+    payload = daily_winner_service.get_daily_winner_status(now=datetime.now())
+    return jsonify(payload), 200
+
+
+@admin_bp.route("/api/post-of-day/run", methods=["POST"])
+@admin_required
+def admin_run_post_of_day_now():
+    now_minute = datetime.now().replace(second=0, microsecond=0)
+    result = daily_winner_service.run_daily_winner_selection(
+        cycle_end_override=now_minute,
+        source="admin_manual",
+    )
+    return jsonify(result), 200
 
 
 # ── App update settings ─────────────────────────────────────────────
@@ -377,6 +391,7 @@ def admin_search_posts():
     result = []
     for p in posts:
         author = user_by_id.get(p.author_id)
+        daily_winner_at = getattr(p, "daily_winner_at", None)
         result.append({
             "id": p.id,
             "text": p.text,
@@ -384,6 +399,13 @@ def admin_search_posts():
             "created_at": p.created_at.isoformat(),
             "followers_only": bool(getattr(p, "followers_only", False)),
             "is_hidden": bool(getattr(p, "is_hidden", False)),
+            "is_daily_winner": bool(getattr(p, "is_daily_winner", False)),
+            "was_daily_winner": daily_winner_at is not None,
+            "daily_winner_at": (
+                daily_winner_at.isoformat()
+                if daily_winner_at is not None
+                else None
+            ),
         })
 
     return jsonify({"posts": result, "total": total, "page": page, "limit": limit}), 200
@@ -466,6 +488,7 @@ def admin_get_post(post_id):
         return jsonify({"error": "Post not found"}), 404
 
     author = User.query.get(post.author_id)
+    daily_winner_at = getattr(post, "daily_winner_at", None)
     media_list = Media.query.filter_by(post_id=post.id).all()
 
     comments = (
@@ -486,6 +509,13 @@ def admin_get_post(post_id):
             "created_at": post.created_at.isoformat(),
             "followers_only": bool(getattr(post, "followers_only", False)),
             "is_hidden": bool(getattr(post, "is_hidden", False)),
+            "is_daily_winner": bool(getattr(post, "is_daily_winner", False)),
+            "was_daily_winner": daily_winner_at is not None,
+            "daily_winner_at": (
+                daily_winner_at.isoformat()
+                if daily_winner_at is not None
+                else None
+            ),
             "media": [
                 {
                     "id": m.id,

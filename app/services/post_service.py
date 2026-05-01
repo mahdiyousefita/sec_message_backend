@@ -1,11 +1,13 @@
 import os
 import uuid
 import time
+import mimetypes
 from flask import current_app, has_app_context, has_request_context, request
 from minio.error import S3Error
 from sqlalchemy import func, or_
 from sqlalchemy.orm import selectinload
 
+from app.extensions import redis_client as redis_backend
 from app.extensions.minio_client import get_minio_client
 from app.models.comment_model import Comment
 from app.models.follow_model import Follow
@@ -35,9 +37,16 @@ VIDEO_MIME_TYPES_WITH_RELIABLE_DURATION = {
     "video/mp4",
     "video/quicktime",
 }
+POST_UPLOAD_LOCK_KEY_PREFIX = "post_upload:lock"
+POST_UPLOAD_LOCK_TTL_SECONDS = 300
+POST_UPLOAD_IN_PROGRESS_ERROR = "Another post upload is already in progress"
 
 
 class MediaStorageError(Exception):
+    pass
+
+
+class ConcurrentPostUploadError(Exception):
     pass
 
 
@@ -223,11 +232,19 @@ def _serialize_post_preview(
     user_by_id: dict,
     profile_by_user_id: dict,
 ):
+    daily_winner_at = getattr(post, "daily_winner_at", None)
     return {
         "id": post.id,
         "text": post.text,
         "author": _serialize_author(post.author_id, user_by_id, profile_by_user_id),
         "created_at": post.created_at.isoformat(),
+        "is_daily_winner": bool(getattr(post, "is_daily_winner", False)),
+        "was_daily_winner": daily_winner_at is not None,
+        "daily_winner_at": (
+            daily_winner_at.isoformat()
+            if daily_winner_at is not None
+            else None
+        ),
         "media": [
             _serialize_media_item(media)
             for media in post.media
@@ -275,6 +292,7 @@ def _serialize_post(
     author_payload = _serialize_author(post.author_id, user_by_id, profile_by_user_id)
     adders_by_media_id = playlist_adders_by_media_id or {}
     quoted_post_id = getattr(post, "quoted_post_id", None)
+    daily_winner_at = getattr(post, "daily_winner_at", None)
     quoted_post = (
         (quoted_posts_by_id or {}).get(quoted_post_id)
         if quoted_post_id is not None
@@ -286,6 +304,13 @@ def _serialize_post(
         "text": post.text,
         "author": author_payload,
         "created_at": post.created_at.isoformat(),
+        "is_daily_winner": bool(getattr(post, "is_daily_winner", False)),
+        "was_daily_winner": daily_winner_at is not None,
+        "daily_winner_at": (
+            daily_winner_at.isoformat()
+            if daily_winner_at is not None
+            else None
+        ),
         "viewer_vote": 0,
         "quoted_post_id": quoted_post_id,
         "quoted_post": (
@@ -404,6 +429,65 @@ def _extension_for_mimetype(mimetype: str) -> str:
 
 def _normalize_mimetype(raw_mimetype: str | None) -> str:
     return normalize_mimetype(raw_mimetype)
+
+
+def _guess_mimetype_from_filename(file_name: str | None) -> str:
+    guessed, _ = mimetypes.guess_type((file_name or "").strip(), strict=False)
+    return _normalize_mimetype(guessed)
+
+
+def _build_upload_lock_key(username: str) -> str:
+    prefix = (current_app.config.get("POST_UPLOAD_LOCK_KEY_PREFIX") or "").strip()
+    if not prefix:
+        prefix = POST_UPLOAD_LOCK_KEY_PREFIX
+    return f"{prefix}:{username}"
+
+
+def _acquire_upload_lock(username: str):
+    redis_client = redis_backend.redis_client
+    key = _build_upload_lock_key(username)
+    token = uuid.uuid4().hex
+    ttl_seconds = max(
+        30,
+        int(current_app.config.get("POST_UPLOAD_LOCK_TTL_SECONDS", POST_UPLOAD_LOCK_TTL_SECONDS)),
+    )
+    try:
+        acquired = bool(redis_client.set(key, token, nx=True, ex=ttl_seconds))
+    except Exception:
+        if has_app_context():
+            current_app.logger.warning(
+                "post_upload_lock_unavailable username=%s",
+                username,
+            )
+        return None
+    if not acquired:
+        raise ConcurrentPostUploadError(POST_UPLOAD_IN_PROGRESS_ERROR)
+    return key, token
+
+
+def _release_upload_lock(lock_handle):
+    if not lock_handle:
+        return
+    redis_client = redis_backend.redis_client
+    key, token = lock_handle
+    try:
+        release_script = """
+if redis.call('get', KEYS[1]) == ARGV[1] then
+    return redis.call('del', KEYS[1])
+end
+return 0
+"""
+        redis_client.eval(release_script, 1, key, token)
+    except Exception:
+        try:
+            if redis_client.get(key) == token:
+                redis_client.delete(key)
+        except Exception:
+            if has_app_context():
+                current_app.logger.warning(
+                    "post_upload_lock_release_failed key=%s",
+                    key,
+                )
 
 
 def _is_blocked_media_mimetype(mimetype: str) -> bool:
@@ -635,169 +719,181 @@ def create_post_with_media(
     track_artist: str | None = None,
     quoted_post_id: int | None = None,
 ):
-    files = files or []
-    if len(files) > MAX_MEDIA_FILES:
-        raise ValueError("Maximum 8 media files allowed")
+    lock_handle = _acquire_upload_lock(username)
+    try:
+        files = files or []
+        if len(files) > MAX_MEDIA_FILES:
+            raise ValueError("Maximum 8 media files allowed")
 
-    normalized_files = []
-    for file in files:
-        if not getattr(file, "filename", ""):
-            raise ValueError("Media file is required")
-        mimetype = _normalize_mimetype(getattr(file, "mimetype", ""))
-        if bool(current_app.config.get("MEDIA_CONTENT_SNIFFING_ENABLED", True)):
-            content_validation_error = validate_upload_content(
-                file,
-                mimetype,
-                allowed_categories={"image", "video", "audio"},
-                reject_active_text_payloads=bool(
-                    current_app.config.get("MEDIA_CONTENT_REJECT_ACTIVE_TEXT", True)
-                ),
-                enforce_declared_category_match=bool(
-                    current_app.config.get("MEDIA_CONTENT_ENFORCE_CATEGORY_MATCH", True)
-                ),
-                sniff_bytes=int(current_app.config.get("MEDIA_CONTENT_SNIFF_BYTES", 2048)),
-            )
-            if content_validation_error in {"unsupported_declared_type", "unsupported_detected_type"}:
-                raise ValueError(f"Unsupported media type: {mimetype}")
-            if content_validation_error in {"blocked_active_content", "declared_type_mismatch"}:
-                raise ValueError("Invalid media content for declared type")
-            if content_validation_error is not None:
-                raise ValueError("Could not validate media file")
-        normalized_files.append((file, file.filename, mimetype))
+        normalized_files = []
+        for file in files:
+            if not getattr(file, "filename", ""):
+                raise ValueError("Media file is required")
+            declared_mimetype = _normalize_mimetype(getattr(file, "mimetype", ""))
+            guessed_mimetype = _guess_mimetype_from_filename(file.filename)
+            mimetype = declared_mimetype
+            if (
+                mimetype in {"", "application/octet-stream"}
+                and guessed_mimetype.startswith(("audio/", "image/", "video/"))
+            ):
+                mimetype = guessed_mimetype
 
-    has_audio_file = any(_is_audio_mimetype(mimetype) for _, _, mimetype in normalized_files)
-    cleaned_text = text.strip() if isinstance(text, str) else ""
-
-    if has_audio_file:
-        if len(normalized_files) != 1:
-            raise ValueError("Music posts can contain only one audio file")
-
-        _, _, mimetype = normalized_files[0]
-        if not _is_audio_mimetype(mimetype):
-            raise ValueError(f"Unsupported media type: {mimetype}")
-    elif cleaned_text == "":
-        raise ValueError("Text is required")
-
-    quoted_post = _resolve_visible_quoted_post_for_author(
-        quoted_post_id=quoted_post_id,
-        author_username=username,
-    )
-
-    validated_files = []
-    for file, file_name, mimetype in normalized_files:
-        if has_audio_file:
-            extension = _extension_for_mimetype(mimetype)
-            display_name, title, artist = _build_audio_metadata(
-                file_name=file_name,
-                track_title=track_title,
-                track_artist=track_artist,
-            )
-            validated_files.append(
-                (
+            if bool(current_app.config.get("MEDIA_CONTENT_SNIFFING_ENABLED", True)):
+                content_validation_error = validate_upload_content(
                     file,
                     mimetype,
-                    extension,
-                    display_name,
-                    title,
-                    artist,
+                    allowed_categories={"image", "video", "audio"},
+                    reject_active_text_payloads=bool(
+                        current_app.config.get("MEDIA_CONTENT_REJECT_ACTIVE_TEXT", True)
+                    ),
+                    enforce_declared_category_match=bool(
+                        current_app.config.get("MEDIA_CONTENT_ENFORCE_CATEGORY_MATCH", True)
+                    ),
+                    sniff_bytes=int(current_app.config.get("MEDIA_CONTENT_SNIFF_BYTES", 2048)),
                 )
-            )
-            continue
+                if content_validation_error in {"unsupported_declared_type", "unsupported_detected_type"}:
+                    raise ValueError(f"Unsupported media type: {mimetype or 'unknown'}")
+                if content_validation_error in {"blocked_active_content", "declared_type_mismatch"}:
+                    raise ValueError("Invalid media content for declared type")
+                if content_validation_error is not None:
+                    raise ValueError("Could not validate media file")
+            normalized_files.append((file, file.filename, mimetype))
 
-        if _is_video_mimetype(mimetype):
-            if mimetype in VIDEO_MIME_TYPES_WITH_RELIABLE_DURATION:
-                duration_seconds = _get_mp4_duration_seconds(file)
-                if duration_seconds is None:
-                    raise ValueError("Could not determine video duration")
-                if duration_seconds > MAX_VIDEO_DURATION_SECONDS:
-                    raise ValueError("Video must be 30 minutes or shorter")
-        elif not _is_image_mimetype(mimetype):
-            raise ValueError(f"Unsupported media type: {mimetype}")
+        has_audio_file = any(_is_audio_mimetype(mimetype) for _, _, mimetype in normalized_files)
+        cleaned_text = text.strip() if isinstance(text, str) else ""
 
-        extension = _extension_for_mimetype(mimetype)
-        validated_files.append((file, mimetype, extension, None, None, None))
+        if has_audio_file:
+            if len(normalized_files) != 1:
+                raise ValueError("Music posts can contain only one audio file")
 
-    post = create_post_by_username(
-        username,
-        cleaned_text,
-        followers_only=followers_only,
-        quoted_post_id=(quoted_post.id if quoted_post is not None else None),
-    )
+            _, _, mimetype = normalized_files[0]
+            if not _is_audio_mimetype(mimetype):
+                raise ValueError(f"Unsupported media type: {mimetype}")
+        elif cleaned_text == "":
+            raise ValueError("Text is required")
 
-    media_post_process_items = []
-    if validated_files:
-        minio = None
-        bucket = current_app.config["MINIO_BUCKET"]
-        local_fallback_enabled = bool(
-            current_app.config.get("MEDIA_LOCAL_FALLBACK_ENABLED", True)
+        quoted_post = _resolve_visible_quoted_post_for_author(
+            quoted_post_id=quoted_post_id,
+            author_username=username,
         )
-        use_local_storage = False
 
-        try:
-            minio = get_minio_client()
-            bucket_exists = minio.bucket_exists(bucket)
-            if not bucket_exists:
-                minio.make_bucket(bucket)
-        except Exception as e:
-            if not local_fallback_enabled:
-                db.session.rollback()
-                raise MediaStorageError("Media storage is unavailable") from e
-            use_local_storage = True
+        validated_files = []
+        for file, file_name, mimetype in normalized_files:
+            if has_audio_file:
+                extension = _extension_for_mimetype(mimetype)
+                display_name, title, artist = _build_audio_metadata(
+                    file_name=file_name,
+                    track_title=track_title,
+                    track_artist=track_artist,
+                )
+                validated_files.append(
+                    (
+                        file,
+                        mimetype,
+                        extension,
+                        display_name,
+                        title,
+                        artist,
+                    )
+                )
+                continue
 
-        for file, mimetype, extension, display_name, title, artist in validated_files:
-            object_name = None
+            if _is_video_mimetype(mimetype):
+                if mimetype in VIDEO_MIME_TYPES_WITH_RELIABLE_DURATION:
+                    duration_seconds = _get_mp4_duration_seconds(file)
+                    if duration_seconds is None:
+                        raise ValueError("Could not determine video duration")
+                    if duration_seconds > MAX_VIDEO_DURATION_SECONDS:
+                        raise ValueError("Video must be 30 minutes or shorter")
+            elif not _is_image_mimetype(mimetype):
+                raise ValueError(f"Unsupported media type: {mimetype}")
 
-            if not use_local_storage:
-                try:
-                    object_name = f"posts/{post.id}/{uuid.uuid4()}.{extension}"
-                    stream, length = _get_stream_and_length(file)
-                    upload_kwargs = {
-                        "bucket_name": bucket,
-                        "object_name": object_name,
-                        "data": stream,
-                        "length": length,
-                        "content_type": mimetype,
-                    }
-                    if length == -1:
-                        upload_kwargs["part_size"] = 10 * 1024 * 1024
+            extension = _extension_for_mimetype(mimetype)
+            validated_files.append((file, mimetype, extension, None, None, None))
 
-                    minio.put_object(**upload_kwargs)
-                except Exception as e:
-                    if not local_fallback_enabled:
-                        db.session.rollback()
-                        raise MediaStorageError("Media storage is unavailable") from e
-                    use_local_storage = True
+        post = create_post_by_username(
+            username,
+            cleaned_text,
+            followers_only=followers_only,
+            quoted_post_id=(quoted_post.id if quoted_post is not None else None),
+        )
 
-            if use_local_storage:
-                try:
-                    object_name = _store_media_locally(file, post.id, extension)
-                except Exception as e:
+        media_post_process_items = []
+        if validated_files:
+            minio = None
+            bucket = current_app.config["MINIO_BUCKET"]
+            local_fallback_enabled = bool(
+                current_app.config.get("MEDIA_LOCAL_FALLBACK_ENABLED", True)
+            )
+            use_local_storage = False
+
+            try:
+                minio = get_minio_client()
+                bucket_exists = minio.bucket_exists(bucket)
+                if not bucket_exists:
+                    minio.make_bucket(bucket)
+            except Exception as e:
+                if not local_fallback_enabled:
                     db.session.rollback()
                     raise MediaStorageError("Media storage is unavailable") from e
+                use_local_storage = True
 
-            add_media(
+            for file, mimetype, extension, display_name, title, artist in validated_files:
+                object_name = None
+
+                if not use_local_storage:
+                    try:
+                        object_name = f"posts/{post.id}/{uuid.uuid4()}.{extension}"
+                        stream, length = _get_stream_and_length(file)
+                        upload_kwargs = {
+                            "bucket_name": bucket,
+                            "object_name": object_name,
+                            "data": stream,
+                            "length": length,
+                            "content_type": mimetype,
+                        }
+                        if length == -1:
+                            upload_kwargs["part_size"] = 10 * 1024 * 1024
+
+                        minio.put_object(**upload_kwargs)
+                    except Exception as e:
+                        if not local_fallback_enabled:
+                            db.session.rollback()
+                            raise MediaStorageError("Media storage is unavailable") from e
+                        use_local_storage = True
+
+                if use_local_storage:
+                    try:
+                        object_name = _store_media_locally(file, post.id, extension)
+                    except Exception as e:
+                        db.session.rollback()
+                        raise MediaStorageError("Media storage is unavailable") from e
+
+                add_media(
+                    post_id=post.id,
+                    object_name=object_name,
+                    mime_type=mimetype,
+                    display_name=display_name,
+                    title=title,
+                    artist=artist,
+                )
+                media_post_process_items.append(
+                    {
+                        "object_name": object_name,
+                        "mime_type": mimetype,
+                    }
+                )
+
+        db.session.commit()
+        if media_post_process_items:
+            async_task_service.enqueue_media_post_process_task(
                 post_id=post.id,
-                object_name=object_name,
-                mime_type=mimetype,
-                display_name=display_name,
-                title=title,
-                artist=artist,
+                media_items=media_post_process_items,
+                source="post_service.create_post_with_media",
             )
-            media_post_process_items.append(
-                {
-                    "object_name": object_name,
-                    "mime_type": mimetype,
-                }
-            )
-
-    db.session.commit()
-    if media_post_process_items:
-        async_task_service.enqueue_media_post_process_task(
-            post_id=post.id,
-            media_items=media_post_process_items,
-            source="post_service.create_post_with_media",
-        )
-    return {"post_id": post.id}
+        return {"post_id": post.id}
+    finally:
+        _release_upload_lock(lock_handle)
 
 
 def get_posts(

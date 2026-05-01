@@ -21,6 +21,8 @@ class Post(db.Model):
     purge_after = db.Column(db.DateTime, nullable=True, index=True)
     hidden_reason = db.Column(db.String(32), nullable=True)
     hidden_by_report_id = db.Column(db.Integer, nullable=True, index=True)
+    is_daily_winner = db.Column(db.Boolean, nullable=False, default=False, index=True)
+    daily_winner_at = db.Column(db.DateTime, nullable=True, index=True)
 
     media = db.relationship(
         "Media",

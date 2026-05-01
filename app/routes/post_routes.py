@@ -1,6 +1,7 @@
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import get_jwt_identity, jwt_required
 from app.services.post_service import (
+    ConcurrentPostUploadError,
     MediaStorageError,
     create_post_with_media,
     get_post,
@@ -140,6 +141,8 @@ def create_post():
         }), 201
     except MediaStorageError as e:
         return jsonify({"error": str(e)}), 503
+    except ConcurrentPostUploadError as e:
+        return jsonify({"error": str(e)}), 409
     except ValueError as e:
         if str(e) == "Account suspended":
             return jsonify({"error": str(e)}), 403

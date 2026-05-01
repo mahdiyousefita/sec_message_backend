@@ -555,6 +555,61 @@ def _notify_vote_sync(actor_username, target_type, target_id, value):
         _maybe_emit_post_like_milestone(post)
 
 
+def _notify_story_mention_sync(actor_username, target_username, story_id):
+    actor = user_repository.get_by_username(actor_username)
+    target = user_repository.get_by_username(target_username)
+    if not actor or not target or actor.id == target.id:
+        return
+
+    extra = json.dumps(
+        {
+            "story_id": story_id,
+            "message": "You were mentioned in a story",
+        }
+    )
+    notif = create_notification(
+        recipient_id=target.id,
+        actor_id=actor.id,
+        kind="story_mention",
+        target_type="story",
+        target_id=story_id,
+        extra=extra,
+    )
+    db.session.commit()
+
+    user_by_id, profile_by_user_id = _build_author_maps({actor.id})
+    payload = _serialize_notification(notif, user_by_id, profile_by_user_id)
+    _emit_activity_notification(target.username, payload)
+
+
+def _notify_story_reply_sync(actor_username, target_username, story_id, reply_preview=None):
+    actor = user_repository.get_by_username(actor_username)
+    target = user_repository.get_by_username(target_username)
+    if not actor or not target or actor.id == target.id:
+        return
+
+    extra = json.dumps(
+        {
+            "story_id": story_id,
+            "reply_preview": (reply_preview or "").strip(),
+            "message": "User replied to your story",
+        }
+    )
+    notif = create_notification(
+        recipient_id=target.id,
+        actor_id=actor.id,
+        kind="story_reply",
+        target_type="story",
+        target_id=story_id,
+        extra=extra,
+    )
+    db.session.commit()
+
+    user_by_id, profile_by_user_id = _build_author_maps({actor.id})
+    payload = _serialize_notification(notif, user_by_id, profile_by_user_id)
+    _emit_activity_notification(target.username, payload)
+
+
 def process_async_notification_event(payload: dict):
     if not isinstance(payload, dict):
         return
@@ -590,6 +645,23 @@ def process_async_notification_event(payload: dict):
             payload.get("target_type"),
             payload.get("target_id"),
             payload.get("value"),
+        )
+        return
+
+    if event == "story_mention":
+        _notify_story_mention_sync(
+            payload.get("actor_username"),
+            payload.get("target_username"),
+            payload.get("story_id"),
+        )
+        return
+
+    if event == "story_reply":
+        _notify_story_reply_sync(
+            payload.get("actor_username"),
+            payload.get("target_username"),
+            payload.get("story_id"),
+            payload.get("reply_preview"),
         )
         return
 
@@ -671,3 +743,41 @@ def notify_vote(actor_username, target_type, target_id, value):
         return
     if async_task_service.should_fallback_inline():
         _notify_vote_sync(actor_username, target_type, target_id, value)
+
+
+def notify_story_mention(actor_username, target_username, story_id):
+    task_payload = {
+        "event": "story_mention",
+        "actor_username": actor_username,
+        "target_username": target_username,
+        "story_id": story_id,
+    }
+    if async_task_service.enqueue_activity_notification_event(
+        task_payload,
+        source="activity_notification.notify_story_mention",
+    ):
+        return
+    if async_task_service.should_fallback_inline():
+        _notify_story_mention_sync(actor_username, target_username, story_id)
+
+
+def notify_story_reply(actor_username, target_username, story_id, reply_preview=None):
+    task_payload = {
+        "event": "story_reply",
+        "actor_username": actor_username,
+        "target_username": target_username,
+        "story_id": story_id,
+        "reply_preview": reply_preview,
+    }
+    if async_task_service.enqueue_activity_notification_event(
+        task_payload,
+        source="activity_notification.notify_story_reply",
+    ):
+        return
+    if async_task_service.should_fallback_inline():
+        _notify_story_reply_sync(
+            actor_username,
+            target_username,
+            story_id,
+            reply_preview=reply_preview,
+        )

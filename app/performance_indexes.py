@@ -109,6 +109,26 @@ MANAGED_INDEX_SPECS: tuple[IndexSpec, ...] = (
         ),
     ),
     IndexSpec(
+        table_name="stories",
+        index_name="ix_stories_user_expires_created",
+        ddl_target="stories (user_id, expires_at, created_at DESC)",
+    ),
+    IndexSpec(
+        table_name="stories",
+        index_name="ix_stories_expires_at",
+        ddl_target="stories (expires_at)",
+    ),
+    IndexSpec(
+        table_name="story_views",
+        index_name="ix_story_views_story_viewed_liked",
+        ddl_target="story_views (story_id, viewed_at DESC, liked)",
+    ),
+    IndexSpec(
+        table_name="story_views",
+        index_name="ix_story_views_viewer_story",
+        ddl_target="story_views (viewer_id, story_id)",
+    ),
+    IndexSpec(
         table_name="post_reports",
         index_name="ix_post_reports_status_created",
         ddl_target="post_reports (status, created_at DESC, id DESC)",
